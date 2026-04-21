@@ -9,10 +9,11 @@ Use this skill to design and scaffold a new AI workflow. This skill follows an o
 
 ## Design Principles
 
-- **Main Agent Orchestration:** The main agent is responsible for coordination, routing, and updating the global run state.
-- **Sub-Agent Execution:** Every workflow step MUST be executed by a sub-agent. The main agent must not perform the business logic of a step.
-- **Isolation:** Each step is an independent unit with defined inputs and outputs.
-- **Markdown Fixtures:** Debugging and testing are powered by Markdown files in a nested structure, prioritizing descriptive assertions over strict JSON validation.
+- **Main Agent Orchestration:** The main agent is responsible for coordination, routing, and updating the global run state in `state.md`.
+- **Sub-Agent Execution:** Every workflow step MUST be executed by a sub-agent. The sub-agent calculates the next step but the main agent performs the actual transition.
+- **Strict Step Structure:** Each step prompt must follow a standardized structure: Step Goal, Input, Recommend Next Step, Output, Success/Failure Criteria.
+- **Schema-Based Outputs:** Every step must define a JSON schema for its output. Outputs are flat JSON containing only workflow indicators and paths to complex artifacts.
+- **Markdown State:** The run state is maintained in `state.md` using frontmatter for progress and descriptive body for outcomes.
 
 ## When to use
 
@@ -26,28 +27,23 @@ Use this skill to design and scaffold a new AI workflow. This skill follows an o
 Before writing any files, you MUST clarify all necessary details with the user:
 - **Workflow Identity:** A clear name and unique ID (slug).
 - **Goal:** The ultimate objective of the workflow.
-- **Steps:** A complete list of steps in the sequence.
-- **Routing & Transitions:** How do the steps connect? Are there conditional branches, loops, or error-handling paths? **If this is unclear, you MUST ask the user. If the user does not provide a clear answer, default to linear sequential execution.**
-- **Step Details:** For EACH step, you must understand:
-  - The specific task/mission.
-  - The required inputs (what data is needed from previous steps or the user).
-  - The expected outputs (what this step produces for the next step or final result).
+- **Steps:** A complete list of steps.
+- **Step Details:** For EACH step, define:
+  - **Step Goal:** Specific task for this step.
+  - **Input:** Dynamic context needed (descriptive, not JSON).
+  - **Recommend Next Step:** How this step suggests the next transition.
+  - **Output:** Flat JSON structure + JSON Schema file.
+  - **Success/Failure Criteria:** Acceptance standards.
 
 ### 2. Confirmation Summary
-Present a structured plan to the user for approval. Include:
-- Workflow ID and Goal.
-- Target directory.
-- Detailed step-by-step breakdown (Task, Inputs, Outputs).
-- Proposed test cases for each step.
+Present a structured plan to the user for approval. Include the workflow identity, goal, and the detailed breakdown of each step (Goal, Input, Output).
 
 ### 3. Scaffolding (Post-confirmation)
 Once confirmed, generate the workflow structure:
-- `orchestration.md`: The source of truth for routing and state management.
-- `steps/step-NN-<name>.md`: Isolated instruction sets for sub-agents.
+- `orchestration.md`: The source of truth for routing.
+- `steps/step-NN-<name>.md`: Standardized instruction sets for sub-agents.
+- `steps/schemas/step-NN-<name>.schema.json`: Output schema for the step.
 - `fixtures/<step-id>/<test-case-name>/`: Markdown-based test cases.
-  - `prompt.md`: The exact prompt to be sent to the sub-agent.
-  - `expected.md`: Descriptive expectation of the result.
-  - `assertions.md`: Human-readable criteria for the main agent to judge success.
 
 ## Standard Directory Layout
 
@@ -56,8 +52,10 @@ Once confirmed, generate the workflow structure:
   orchestration.md          # Main agent's routing logic
   workflow.spec.json        # Metadata about the workflow
   steps/
-    step-01-discovery.md    # Instructions for sub-agent
+    step-01-discovery.md    # Standardized instructions
     step-02-processing.md
+    schemas/
+      step-01-discovery.schema.json
   fixtures/
     step-01-discovery/
       happy-path/
@@ -65,9 +63,37 @@ Once confirmed, generate the workflow structure:
         expected.md         # Descriptive expectation
         assertions.md       # Markdown criteria for main agent
   runs/                     # Directory for execution state
-  snapshots/                # Captured states for debugging
 ```
 
-## Recommended Tools
+## Step Prompt Structure
 
-- Use `scripts/create_workflow.py` to automate the file generation after the spec is finalized and confirmed.
+Each step file in `steps/` MUST follow this standardized structure. While these sections are mandatory, the `Instructions` section holds the core business logic.
+
+```markdown
+# Step: <step-id>
+
+## Step Goal
+<Specific task definition for this step>
+
+## Instructions
+<The core "how-to". Detailed business logic, execution rules, and steps the sub-agent must follow.>
+
+## Input
+<List of required dynamic context with descriptions>
+- **Input Name**: <Description>
+
+## Recommend Next Step
+<Logic to determine the next step ID>
+
+## Output
+<Flat JSON structure reference>
+- **JSON Schema**: `steps/schemas/<step-id>.schema.json`
+- **Fields**:
+  - `success`: (Boolean) True if Success Criteria are met.
+  - `nextStep`: The ID of the next step.
+  - `schema`: Path to the JSON schema.
+  - <other-business-fields>
+
+## Success/Failure Criteria
+<Standards for completion. The sub-agent evaluates these to set the 'success' boolean.>
+```

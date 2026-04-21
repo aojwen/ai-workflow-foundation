@@ -1,166 +1,45 @@
 # Architecture Notes
 
-This skill is built around a split between static workflow definition and mutable runtime state.
+This skill follows a structured orchestration model where a main agent manages the workflow's state and transitions, while specialized sub-agents execute individual steps.
 
-## Why the BMAD-style pattern is strong
+## State Management: state.md
 
-- Loading one step at a time reduces context pollution.
-- Linear step files are easy for an agent to follow reliably.
-- Step-local instructions make behavior predictable.
+The run state is maintained in a human-readable `state.md` file rather than a complex JSON.
 
-## Why direct next-step coupling becomes a problem
+- **Frontmatter (YAML)**: Tracks high-level progress (current step, status, completion list).
+- **Body (Markdown)**: Records detailed step outcomes. Each outcome includes the field name, its value, and a description (derived from the step's JSON schema) to ensure the agent and user understand the significance of each data point.
 
-When a step both performs work and decides the next step, three concerns get mixed together:
+## Standardized Step Structure
 
-1. business logic
-2. routing logic
-3. runtime persistence
+Every step MUST follow this contract:
 
-That makes debug expensive because:
+1. **Step Goal**: Clear task definition.
+2. **Input**: Descriptive dynamic context requirements.
+3. **Recommend Next Step**: Sub-agent's logic for the next transition.
+4. **Output**: Flat JSON with `nextStep` and `schema` reference.
+5. **Success/Failure Criteria**: Clear acceptance standards.
 
-- replay depends on shared global state
-- re-running one step may require undoing downstream state
-- step behavior is harder to test outside the full chain
+## Routing Model
 
-## Better split
+Responsibility for routing is shared:
 
-Use three layers.
+- **Sub-Agent**: Calculates the `nextStep` based on the step's logic and internal indicators. It returns this suggestion as part of its output.
+- **Main Agent**: Reads the `nextStep` from the sub-agent's output. It **authorizes** this transition by updating `state.md` and preparing the next step's handoff. The main agent retains the flexibility to override the suggestion if the global `orchestration.md` logic dictates otherwise.
 
-### 1. Workflow definition
+This approach reduces the main agent's cognitive load by delegating complex branching logic to the step level while maintaining centralized control.
 
-Mostly static files:
+## Isolation and Traceability
 
-- `orchestration.md`
-- `steps/*.md`
-- `fixtures/**`
+Each step execution is isolated in its own directory under the run:
+`runs/<run-id>/<step-id>/`
+- `sub-agent-prompt.md`: The exact input used to spawn the executor.
+- `response.json`: The raw output from the executor.
+- `<artifacts>`: Any files produced during execution.
 
-This layer defines contracts and routing rules.
+The main agent records the final outcome in `state.md`, referencing the artifact paths for downstream consumption.
 
-### 2. Runtime state
+## Contracts and Schemas
 
-Per-run mutable files:
-
-- `runs/<run-id>/state.json`
-- `runs/<run-id>/events.ndjson`
-- `runs/<run-id>/artifacts/*`
-
-This layer records what the **main agent decided and observed** in one execution.
-
-### 3. Snapshots for replay
-
-Reusable debug captures:
-
-- `snapshots/<step-id>/<snapshot-name>/input.json`
-- `snapshots/<step-id>/<snapshot-name>/state-before.json`
-- `snapshots/<step-id>/<snapshot-name>/expected-output.md`
-
-This layer exists so a step can be replayed without editing the main run.
-
-## Recommended contracts
-
-Each step should expose a contract with these sections:
-
-- `step_id`
-- `purpose`
-- `inputs_required`
-- `optional_inputs`
-- `outputs_written`
-- `side_effects`
-- `completion_checks`
-- `recommended_next_step`
-
-The orchestrator should expose:
-
-- workflow goal
-- entry step
-- route table
-- run state schema
-- failure handling policy
-- debug policy
-
-In this skill, "orchestrator" means the **main agent working from the orchestration file**, not a code runtime.
-
-## Routing model
-
-Preferred routing order:
-
-1. orchestrator route table
-2. current run state
-3. step output hints
-
-This means a step can suggest `recommended_next_step`, but the orchestrator makes the final decision.
-
-## State model
-
-Avoid one global status file that must be manually rewound.
-
-Prefer this:
-
-```json
-{
-  "run_id": "run-2026-04-17T20-00-00Z",
-  "workflow_id": "example-workflow",
-  "current_step": "step-02-collect-context",
-  "completed_steps": ["step-01-init"],
-  "step_outputs": {
-    "step-01-init": {
-      "summary": "..."
-    }
-  },
-  "artifacts": [],
-  "route_decision": {
-    "chosen_next_step": "step-02-collect-context",
-    "reason": "entrypoint"
-  }
-}
-```
-
-Key rule:
-
-- The run state is disposable.
-- The workflow definition is durable.
-- The main agent owns state transitions.
-
-## Debug model
-
-There are two useful debug modes.
-
-### Fixture debug
-
-Use curated, stable inputs for a step.
-
-Best for:
-
-- early development
-- regression checks
-- reproducing common edge cases
-
-### Snapshot replay
-
-Capture the exact inputs and relevant state before a failed step, then replay from that snapshot.
-
-Best for:
-
-- production-like failures
-- routing bugs
-- prompt regressions tied to real context
-
-## Minimum viable workflow standard
-
-For a new workflow, require:
-
-- one `orchestration.md`
-- at least one step file
-- one fixture per step
-- one run-state schema
-- one debug recipe per step
-
-## Migration advice for an existing BMAD-style workflow
-
-If an existing step currently says "after this, load step X", migrate it like this:
-
-1. keep the business instructions in the step
-2. remove mandatory routing ownership from the step
-3. add `recommended_next_step`
-4. move actual route selection into `orchestration.md` and main-agent reasoning
-5. replace shared status mutation with per-run state writes
+Every step defines a JSON schema for its output. This schema is the source of truth for:
+1. **Validation**: Confirming the sub-agent met the contract.
+2. **Context Enrichment**: Providing descriptions for the fields recorded in `state.md`.

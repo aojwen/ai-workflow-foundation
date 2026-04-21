@@ -4,117 +4,115 @@ import json
 from pathlib import Path
 from typing import Any
 
+ORCHESTRATION_TEMPLATE = """# Workflow Orchestration
 
-ORCHESTRATION_TEMPLATE = """---
+---
 workflow_id: {workflow_id}
 goal: {goal}
 entry_step: {entry_step}
-run_state_file: runs/<run-id>/state.json
-event_log_file: runs/<run-id>/events.ndjson
+state_file: runs/{workflow_id}/<run-id>/state.md
 ---
 
-# Orchestration
+# Orchestration Logic
 
 ## Main Agent Responsibilities
-
-- Read this file first and treat it as the routing authority
-- Decide which step should run now
-- Prepare a step handoff packet
-- Trigger normal step execution in a sub-agent
-- Validate the returned output based on step assertions
-- Update run state
-- Decide whether to continue, branch, retry, or stop
-- Record why each route decision was made
-- Never do normal step business work directly
+- **Initialization**: Create `state.md` in `runs/{workflow_id}/<run-id>/`.
+- **Routing**: Check the `success` field from the previous step. 
+  - If `success == true`, route to the `nextStep` provided in the output.
+  - If `success == false`, default to STOP (unless custom retry logic is defined).
+- **Input Preparation**: Identify inputs for the next step. Gather values from `state.md` or user input.
+- **Workspace Injection**: You MUST explicitly tell the sub-agent the directory for this step: `runs/{workflow_id}/<run-id>/{step_id}/`.
+- **Sub-Agent Spawning**: Prepare the final prompt (Original Step Prompt + Workspace Instruction) and save it to `runs/{workflow_id}/<run-id>/<step-id>/sub-agent-prompt.md`. Invoke the sub-agent.
+- **State Updating**: Parse the sub-agent's JSON response and its schema. Update `state.md`.
 
 ## Sub-Agent Responsibilities
-
-- Load only the assigned step
-- Treat the received handoff packet as the full execution boundary
-- Return the step result in the declared contract shape
-- Never decide global workflow routing
-
-## Machine Contract
-
-```json
-{{
-  "workflow_id": "{workflow_id}",
-  "entry_step": "{entry_step}",
-  "routes": {routes_json}
-}}
-```
+- **Task Execution**: Perform the specific task.
+- **Artifact Management**: Save all files to the directory provided by the Main Agent.
+- **Evaluation**: Self-evaluate against Success Criteria and return `success`.
+- **Routing**: Calculate `nextStep`.
 
 ## Route Table
-
-| Condition | Next step |
-| --- | --- |
-| new run | {entry_step} |
-| current step completes | see machine contract routes |
+| Current Step | Condition | Next Action |
+| --- | --- | --- |
+| Any | `success == false` | STOP |
+| Any | `success == true` | Read `nextStep` from output |
 """
 
+STEP_TEMPLATE = """# Step: {step_id}
 
-STEP_TEMPLATE = """---
-step_id: {step_id}
-title: {title}
-purpose: {purpose}
-inputs_required:
-{inputs_yaml}
-outputs_written:
-{outputs_yaml}
-recommended_next_step: {recommended_next}
+## Step Goal
+{purpose}
+
+## Instructions
+{instructions_logic}
+- **Artifacts**: All generated files must be saved to the **Workspace Directory** provided by the Main Agent.
+- **Evaluation**: Evaluate results against Success Criteria to set the `success` field.
+
+## Input
+{inputs_list}
+- **Workspace Directory**: (Provided by Main Agent) The absolute path for artifact storage.
+
+## Recommend Next Step
+{next_step_logic}
+- Default: `{recommended_next}`
+
+## Output
+- **JSON Schema**: `steps/schemas/{step_id}.schema.json`
+- **Fields**:
+  - `success`: (Boolean) True if Success Criteria are met.
+  - `nextStep`: The ID of the next step.
+  - `schema`: Path to the JSON schema.
+{outputs_list}
+
+## Success/Failure Criteria
+### Success
+- Goal achieved and artifacts saved to Workspace Directory.
+- Output matches schema.
+
+### Failure
+- Artifacts missing or saved to wrong location.
+"""
+
+SCHEMA_TEMPLATE = """{{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {{
+    "success": {{
+      "type": "boolean",
+      "description": "True if the step achieved its Success Criteria, false otherwise."
+    }},
+    "nextStep": {{
+      "type": "string",
+      "description": "The ID of the next step to execute."
+    }},
+    "schema": {{
+      "type": "string",
+      "description": "Path to this schema file."
+    }}{additional_properties}
+  }},
+  "required": ["success", "nextStep", "schema"{required_fields}]
+}}
+"""
+
+RUN_STATE_TEMPLATE = """---
+workflow_id: {workflow_id}
+run_id: <run-id>
+status: ready
+current_step: {entry_step}
+progress:
+  completed: []
+  total_steps: {total_steps}
+created_at: <timestamp>
+updated_at: <timestamp>
 ---
 
-# Step Instructions
+# Workflow Run State: {workflow_id}
 
-## Intended Executor
+## Goal
+{goal}
 
-This step is intended to be executed by a sub-agent.
-The main agent may orchestrate, inspect, validate, and persist state, but should not directly perform this step's business work.
+## Step Outcomes
 
-## Machine Contract
-
-```json
-{machine_contract_json}
-```
-
-## Input Contract
-
-- Required inputs must be present in the handoff packet.
-
-## Output Contract
-
-Produce the declared outputs. The main agent will validate these against the step's assertions.
-
-## Completion Checks
-
-- All required inputs were utilized.
-- Outputs match the descriptive expectations and assertions defined in the test fixtures.
-"""
-
-
-RUN_STATE_TEMPLATE = """{{
-  "run_id": "",
-  "workflow_id": "{workflow_id}",
-  "status": "ready",
-  "current_step": "{entry_step}",
-  "completed_steps": [],
-  "step_outputs": {{}},
-  "route_decision": {{
-    "chosen_next_step": "{entry_step}",
-    "reason": "new run",
-    "decided_by": "main-agent",
-    "timestamp": ""
-  }},
-  "blockers": [],
-  "retry_state": {{
-    "step_id": null,
-    "attempt_count": 0,
-    "last_failure_reason": null
-  }},
-  "artifacts": [],
-  "created_at": "",
-  "updated_at": ""
-}}
 """
 
 FIXTURE_PROMPT_TEMPLATE = """# Test Prompt: {step_id} - {test_case}
@@ -126,29 +124,8 @@ FIXTURE_PROMPT_TEMPLATE = """# Test Prompt: {step_id} - {test_case}
 {inputs_json}
 
 ## Instructions
-Please execute the step `{step_id}` with the provided inputs.
+Please execute the step `{step_id}` with the provided inputs. Remember to save artifacts to the workspace directory injected by the Debug Orchestrator.
 """
-
-FIXTURE_EXPECTED_TEMPLATE = """# Expected Output: {step_id} - {test_case}
-
-## Summary
-{expected_summary}
-
-## Details
-- [ ] Output contains {first_output}
-- [ ] Output is formatted as requested
-"""
-
-FIXTURE_ASSERTIONS_TEMPLATE = """# Assertions: {step_id} - {test_case}
-
-The main agent should use these criteria to judge the success of the sub-agent's execution:
-
-1. **Completeness**: All declared outputs are present.
-2. **Relevance**: The output directly addresses the step's purpose: {purpose}.
-3. **Accuracy**: {expected_summary}
-4. **Constraints**: No unrelated files were modified and global routing was not attempted.
-"""
-
 
 def slugify(text: str) -> str:
     value = text.strip().lower().replace("_", "-").replace(" ", "-")
@@ -156,33 +133,17 @@ def slugify(text: str) -> str:
         value = value.replace("--", "-")
     return value.strip("-")
 
-
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
       path.write_text(content, encoding="utf-8")
 
-
 def build_workflow_root(project_root: str, workflow_id: str, target_dir: str | None = None) -> Path:
     base = Path(project_root).expanduser().resolve()
     return Path(target_dir).expanduser().resolve() if target_dir else base / ".ai-workflows" / workflow_id
 
-
 def build_step_id(index: int, name: str) -> str:
     return f"step-{index:02d}-{slugify(name)}"
-
-
-def default_routes(step_ids: list[str]) -> list[dict[str, Any]]:
-    return [
-        {
-            "from": step_id,
-            "when": "always",
-            "next_step": step_ids[index + 1] if index + 1 < len(step_ids) else "STOP",
-            "reason": "default linear route",
-        }
-        for index, step_id in enumerate(step_ids)
-    ]
-
 
 def scaffold_workflow(
     *,
@@ -195,12 +156,13 @@ def scaffold_workflow(
 ) -> Path:
     workflow_id = slugify(workflow_id)
     root = build_workflow_root(project_root, workflow_id, target_dir)
+    base_project = Path(project_root).expanduser().resolve()
+    
     raw_step_names = [step["name"].strip() for step in steps if step["name"].strip()]
     if not raw_step_names:
         raise ValueError("At least one step is required.")
     step_ids = [build_step_id(index, name) for index, name in enumerate(raw_step_names, start=1)]
     entry_step = step_ids[0]
-    routes = default_routes(step_ids)
 
     write(
         root / "orchestration.md",
@@ -208,42 +170,48 @@ def scaffold_workflow(
             workflow_id=workflow_id,
             goal=goal,
             entry_step=entry_step,
-            routes_json=json.dumps(routes, indent=2),
         ),
     )
 
     for index, step_id in enumerate(step_ids):
         step_spec = steps[index]
-        title = raw_step_names[index].strip().title()
         recommended_next = step_ids[index + 1] if index + 1 < len(step_ids) else "STOP"
-        inputs = step_spec.get("inputs_required") or ["TODO"]
-        outputs = step_spec.get("outputs_written") or ["TODO"]
+        inputs = step_spec.get("inputs_required") or ["context"]
+        outputs = step_spec.get("outputs_written") or ["result"]
         
-        step_machine_contract = {
-            "step_id": step_id,
-            "inputs_required": inputs,
-            "outputs_written": outputs,
-            "recommended_next_step": recommended_next,
-        }
+        inputs_list = "\n".join(f"- **{item}**: <Description of {item}>" for item in inputs)
+        outputs_list = "\n".join(f"  - `{item}`: <Description of {item}>" for item in outputs)
+
         write(
             root / "steps" / f"{step_id}.md",
             STEP_TEMPLATE.format(
                 step_id=step_id,
-                title=title,
-                recommended_next=recommended_next,
-                machine_contract_json=json.dumps(step_machine_contract, indent=2, ensure_ascii=False),
                 purpose=step_spec.get("purpose", "TODO"),
-                inputs_yaml="\n".join(f"  - {item}" for item in inputs),
-                outputs_yaml="\n".join(f"  - {item}" for item in outputs),
+                instructions_logic=step_spec.get("instructions", "1. Process the inputs.\n2. Generate required artifacts."),
+                inputs_list=inputs_list,
+                outputs_list=outputs_list,
+                recommended_next=recommended_next,
+                next_step_logic=step_spec.get("next_step_logic", "- Default to the next sequential step."),
             ),
         )
+
+        additional_props = ""
+        required_fields = ""
+        for out in outputs:
+            additional_props += f',\n    "{out}": {{\n      "type": "string",\n      "description": "Description of {out}"\n    }}'
+            required_fields += f', "{out}"'
         
-        # New fixture structure: fixtures/<step-id>/happy-path/
+        write(
+            root / "steps" / "schemas" / f"{step_id}.schema.json",
+            SCHEMA_TEMPLATE.format(
+                additional_properties=additional_props,
+                required_fields=required_fields
+            )
+        )
+        
         test_case = "happy-path"
         fixture_dir = root / "fixtures" / step_id / test_case
-        
-        fixture_input = step_spec.get("fixture_input") or {f"input_{i}": "TODO" for i in range(len(inputs))}
-        fixture_expected = step_spec.get("expected_output_summary") or "A successful execution of the step."
+        fixture_input = step_spec.get("fixture_input") or {item: "TODO" for item in inputs}
         
         write(
             fixture_dir / "prompt.md",
@@ -254,38 +222,26 @@ def scaffold_workflow(
                 inputs_json=json.dumps(fixture_input, indent=2, ensure_ascii=False)
             )
         )
-        write(
-            fixture_dir / "expected.md",
-            FIXTURE_EXPECTED_TEMPLATE.format(
-                step_id=step_id,
-                test_case=test_case,
-                expected_summary=fixture_expected,
-                first_output=outputs[0] if outputs else "result"
-            )
-        )
-        write(
-            fixture_dir / "assertions.md",
-            FIXTURE_ASSERTIONS_TEMPLATE.format(
-                step_id=step_id,
-                test_case=test_case,
-                purpose=step_spec.get("purpose", "TODO"),
-                expected_summary=fixture_expected
-            )
-        )
 
-    write(root / "runs" / ".gitkeep", "")
-    write(root / "snapshots" / ".gitkeep", "")
+    runs_dir = base_project / "runs" / workflow_id
+    write(runs_dir / ".gitkeep", "")
     write(
-        root / "runs" / "state.example.json",
-        RUN_STATE_TEMPLATE.format(workflow_id=workflow_id, entry_step=entry_step),
+        runs_dir / "state.example.md",
+        RUN_STATE_TEMPLATE.format(
+            workflow_id=workflow_id, 
+            entry_step=entry_step,
+            total_steps=len(step_ids),
+            goal=goal
+        ),
     )
+    
     write(
         root / "workflow.spec.json",
         json.dumps(
             {
                 "workflow_id": workflow_id,
                 "goal": goal,
-                "project_root": str(Path(project_root).expanduser().resolve()),
+                "project_root": str(base_project),
                 "target_dir": str(root),
                 "orchestration_model": "main-agent-routes-sub-agents-execute",
                 "steps": steps,
@@ -297,30 +253,17 @@ def scaffold_workflow(
     )
     return root
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scaffold an AI workflow with Markdown fixtures.")
+    parser = argparse.ArgumentParser(description="Scaffold an AI workflow.")
     parser.add_argument("--workflow-id", required=True, help="Workflow identifier")
-    parser.add_argument("--goal", default="TODO", help="One sentence workflow goal")
-    parser.add_argument("--project-root", default=".", help="Current project root")
-    parser.add_argument("--target-dir", help="Optional explicit workflow directory")
-    parser.add_argument(
-        "--steps",
-        default="init,process,complete",
-        help="Comma separated step names in order",
-    )
+    parser.add_argument("--goal", default="TODO", help="Goal")
+    parser.add_argument("--project-root", default=".", help="Root")
+    parser.add_argument("--target-dir", help="Target")
+    parser.add_argument("--steps", default="init,process,complete", help="Steps")
     args = parser.parse_args()
 
     steps = [{"name": s.strip()} for s in args.steps.split(",") if s.strip()]
-    root = scaffold_workflow(
-        project_root=args.project_root,
-        workflow_id=args.workflow_id,
-        goal=args.goal,
-        steps=steps,
-        target_dir=args.target_dir,
-    )
-    print(root)
-
+    scaffold_workflow(project_root=args.project_root, workflow_id=args.workflow_id, goal=args.goal, steps=steps, target_dir=args.target_dir)
 
 if __name__ == "__main__":
     main()
