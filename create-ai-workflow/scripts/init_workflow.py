@@ -16,18 +16,19 @@ state_file: runs/{workflow_id}/<run-id>/state.md
 # Orchestration Logic
 
 ## Main Agent Responsibilities
-- **Initialization**: Create `state.md` in `runs/{workflow_id}/<run-id>/`.
+- **Initialization**: Generate a unique `run-id` (timestamp-based) and create `state.md` in `runs/{workflow_id}/<run-id>/`.
 - **Routing**: Check the `success` field from the previous step. 
   - If `success == true`, route to the `nextStep` provided in the output.
   - If `success == false`, default to STOP (unless custom retry logic is defined).
 - **Input Preparation**: Identify inputs for the next step. Gather values from `state.md` or user input.
-- **Workspace Injection**: You MUST explicitly tell the sub-agent the directory for this step: `runs/{workflow_id}/<run-id>/{step_id}/`.
-- **Sub-Agent Spawning**: Prepare the final prompt (Original Step Prompt + Workspace Instruction) and save it to `runs/{workflow_id}/<run-id>/<step-id>/sub-agent-prompt.md`. Invoke the sub-agent.
-- **State Updating**: Parse the sub-agent's JSON response and its schema. Update `state.md`.
+- **Workspace Injection**: You MUST explicitly tell the sub-agent the working directory for this step: `runs/{workflow_id}/<run-id>/{step_id}/`. Pass this as `workDir`.
+- **Prompt Recording**: BEFORE spawning the sub-agent, prepare the final, fully-resolved prompt and save it to `runs/{workflow_id}/<run-id>/<step-id>/sub-agent-prompt.md`.
+- **Sub-Agent Spawning**: Invoke the sub-agent with the resolved prompt.
+- **State Updating**: Parse the sub-agent's JSON response. Update the `progress` in `state.md` frontmatter and append the outcome to the body.
 
 ## Sub-Agent Responsibilities
 - **Task Execution**: Perform the specific task.
-- **Artifact Management**: Save all files to the directory provided by the Main Agent.
+- **Artifact Management**: Save all files to the `workDir` provided by the Main Agent.
 - **Evaluation**: Self-evaluate against Success Criteria and return `success`.
 - **Routing**: Calculate `nextStep`.
 
@@ -43,14 +44,14 @@ STEP_TEMPLATE = """# Step: {step_id}
 ## Step Goal
 {purpose}
 
-## Instructions
-{instructions_logic}
-- **Artifacts**: All generated files must be saved to the **Workspace Directory** provided by the Main Agent.
-- **Evaluation**: Evaluate results against Success Criteria to set the `success` field.
-
 ## Input
 {inputs_list}
-- **Workspace Directory**: (Provided by Main Agent) The absolute path for artifact storage.
+- **workDir**: The absolute path to the working directory for this step (`runs/<workflow-id>/<run-id>/{step_id}/`).
+
+## Instructions
+{instructions_logic}
+- **Artifacts**: All generated files must be saved to the **workDir** provided by the Main Agent.
+- **Evaluation**: Evaluate results against Success Criteria to set the `success` field.
 
 ## Recommend Next Step
 {next_step_logic}
@@ -66,7 +67,7 @@ STEP_TEMPLATE = """# Step: {step_id}
 
 ## Success/Failure Criteria
 ### Success
-- Goal achieved and artifacts saved to Workspace Directory.
+- Goal achieved and artifacts saved to `workDir`.
 - Output matches schema.
 
 ### Failure

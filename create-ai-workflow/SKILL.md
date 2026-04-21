@@ -9,16 +9,18 @@ Use this skill to design and scaffold a new AI workflow. This skill follows an o
 
 ## Design Principles
 
-- **Main Agent Orchestration:** The main agent is responsible for coordination, routing, and updating the global run state in `state.md`.
+- **Main Agent Orchestration:** The main agent is responsible for coordination, routing, generating a unique `run-id` (e.g., timestamp-based), and updating the global run state in `state.md`.
 - **Sub-Agent Execution:** Every workflow step MUST be executed by a sub-agent. The sub-agent calculates the next step but the main agent performs the actual transition.
-- **Strict Step Structure:** Each step prompt must follow a standardized structure: Step Goal, Input, Recommend Next Step, Output, Success/Failure Criteria.
+- **Strict Step Structure:** Each step prompt must follow a standardized structure: Step Goal, Input, Instructions, Recommend Next Step, Output, Success/Failure Criteria.
+- **Workspace Isolation:** Every step execution must have its own working directory: `runs/<workflow-id>/<run-id>/<step-id>/`. The path MUST be passed as `workDir` to the sub-agent.
 - **Schema-Based Outputs:** Every step must define a JSON schema for its output. Outputs are flat JSON containing only workflow indicators and paths to complex artifacts.
-- **Markdown State:** The run state is maintained in `state.md` using frontmatter for progress and descriptive body for outcomes.
+- **Markdown State:** The run state is maintained in `state.md`. Use frontmatter ONLY for progress tracking. Record complete step outcomes (including field descriptions) in the body.
 
 ## When to use
 
 - You need to create a new AI workflow from scratch.
 - You want to refactor a complex task into a structured, multi-step workflow.
+- You want to transform an existing workflow into this structured format while preserving its context and reference documents.
 - You need to define clear contracts and test cases for an agentic process.
 
 ## Workflow Creation Process
@@ -30,15 +32,21 @@ Before writing any files, you MUST clarify all necessary details with the user:
 - **Steps:** A complete list of steps.
 - **Step Details:** For EACH step, define:
   - **Step Goal:** Specific task for this step.
-  - **Input:** Dynamic context needed (descriptive, not JSON).
+  - **Input:** Dynamic context needed, including the mandatory `workDir`.
   - **Recommend Next Step:** How this step suggests the next transition.
   - **Output:** Flat JSON structure + JSON Schema file.
   - **Success/Failure Criteria:** Acceptance standards.
 
-### 2. Confirmation Summary
-Present a structured plan to the user for approval. Include the workflow identity, goal, and the detailed breakdown of each step (Goal, Input, Output).
+### 2. Refactoring/Transformation Guidelines
+When transforming an existing workflow or design:
+- **No Information Loss:** DO NOT aggressively compress or omit information from the original workflow. Ensure all business logic and edge cases are preserved in the new `Instructions` sections.
+- **Reference Migration:** If the original workflow references external documents, guides, or examples, migrate these to the new workflow's `references/` directory or embed them directly into the relevant `steps/` if small.
+- **Asset Preservation:** Ensure any non-code assets (prompts, data samples) are kept and correctly paths are updated.
 
-### 3. Scaffolding (Post-confirmation)
+### 3. Confirmation Summary
+Present a structured plan to the user for approval. Use the `templates/confirmation-summary.template.md` format.
+
+### 4. Scaffolding (Post-confirmation)
 Once confirmed, generate the workflow structure:
 - `orchestration.md`: The source of truth for routing.
 - `steps/step-NN-<name>.md`: Standardized instruction sets for sub-agents.
@@ -51,6 +59,7 @@ Once confirmed, generate the workflow structure:
 .ai-workflows/<workflow-id>/
   orchestration.md          # Main agent's routing logic
   workflow.spec.json        # Metadata about the workflow
+  references/               # Migrated reference documents and guides
   steps/
     step-01-discovery.md    # Standardized instructions
     step-02-processing.md
@@ -62,12 +71,12 @@ Once confirmed, generate the workflow structure:
         prompt.md           # Input to sub-agent
         expected.md         # Descriptive expectation
         assertions.md       # Markdown criteria for main agent
-  runs/                     # Directory for execution state
+  runs/                     # Directory for execution state (example/gitkeep)
 ```
 
 ## Step Prompt Structure
 
-Each step file in `steps/` MUST follow this standardized structure. While these sections are mandatory, the `Instructions` section holds the core business logic.
+Each step file in `steps/` MUST follow this standardized structure.
 
 ```markdown
 # Step: <step-id>
@@ -75,12 +84,13 @@ Each step file in `steps/` MUST follow this standardized structure. While these 
 ## Step Goal
 <Specific task definition for this step>
 
-## Instructions
-<The core "how-to". Detailed business logic, execution rules, and steps the sub-agent must follow.>
-
 ## Input
 <List of required dynamic context with descriptions>
-- **Input Name**: <Description>
+- **workDir**: The absolute path to the working directory for this step (`runs/<workflow-id>/<run-id>/<step-id>/`).
+- **<Input Name>**: <Description>
+
+## Instructions
+<The core "how-to". Detailed business logic, execution rules, and steps the sub-agent must follow. Reference any documents in `references/` if applicable.>
 
 ## Recommend Next Step
 <Logic to determine the next step ID>

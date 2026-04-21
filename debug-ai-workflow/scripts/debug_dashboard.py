@@ -70,7 +70,7 @@ def execute_test_case(workflow_id: str, step_id: str, test_case: str, project_ro
     debug_run_dir.mkdir(parents=True, exist_ok=True)
 
     final_prompt = DEBUG_EXECUTION_WRAPPER.format(workspace_dir=debug_run_dir.absolute(), step_prompt=prompt_content)
-
+    
     start_time = time.time()
     response = run_claude(final_prompt, project_root)
     exec_time = time.time() - start_time
@@ -78,11 +78,11 @@ def execute_test_case(workflow_id: str, step_id: str, test_case: str, project_ro
     val_prompt = DEBUG_VALIDATION_PROMPT.format(expected_content=expected_content, assertions_content=assertions_content, response=response)
     val_response = run_claude(val_prompt, project_root)
     passed = "RESULT_PASS" in val_response
-
+    
     (debug_run_dir / "sub-agent-prompt.md").write_text(final_prompt, encoding="utf-8")
     (debug_run_dir / "response.json").write_text(response, encoding="utf-8")
     (debug_run_dir / "validation.md").write_text(val_response, encoding="utf-8")
-
+    
     return {"passed": passed, "execution_time": exec_time, "workspace": str(debug_run_dir)}
 
 class DebugHandler(SimpleHTTPRequestHandler):
@@ -109,8 +109,6 @@ class DebugHandler(SimpleHTTPRequestHandler):
             test_case = query.get('test_case', [''])[0]
             self.send_json(self.get_fixtures(workflow, step, test_case))
         else:
-            # Serve static files from dashboard directory
-            os.chdir(self.dashboard_dir)
             super().do_GET()
 
     def do_POST(self):
@@ -150,15 +148,13 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--project-root", default=".")
     args = parser.parse_args()
-
+    
     script_dir = Path(__file__).parent.absolute()
     DebugHandler.project_root = args.project_root
     DebugHandler.dashboard_dir = str(script_dir.parent / "dashboard")
 
-    os.chdir(DebugHandler.dashboard_dir)
     httpd = HTTPServer(('', args.port), DebugHandler)
     webbrowser.open(f"http://localhost:{args.port}")
-    print(f"Dashboard serving from: {DebugHandler.dashboard_dir}")
     httpd.serve_forever()
 
 if __name__ == "__main__":
