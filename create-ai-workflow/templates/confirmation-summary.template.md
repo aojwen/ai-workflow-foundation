@@ -1,0 +1,38 @@
+# Workflow Confirmation Summary
+
+Use this exact structure before creation. Ensure every step's Goal, Inputs, and Outputs are clearly discovered.
+
+```md
+**Proposed Workflow**
+
+`workflow_id`: <workflow-id>
+`goal`: <one-sentence goal>
+`target_dir`: <resolved directory>
+`routing_strategy`: Step-driven (via nextStep) with Main Agent oversight
+
+**Step-by-Step Breakdown**
+
+1. **<step-id-01>**: <Step Goal>
+   - **Inputs**: <Descriptive list of dynamic context required>
+   - **Recommend Next Step**: <Logic for calculating the next transition>
+   - **Output**: <Flat JSON fields + schema reference>
+   - **Success Criteria**: <Criteria for acceptance>
+
+2. **<step-id-02>**: <Step Goal>
+   - **Inputs**: <Descriptive list of dynamic context required>
+   - **Recommend Next Step**: <Logic for calculating the next transition>
+   - **Output**: <Flat JSON fields + schema reference>
+   - **Success Criteria**: <Criteria for acceptance>
+
+**State Management**
+- **state.md**: Uses frontmatter for progress and a descriptive body for step outcomes (fields, values, and explanations).
+
+**Standardized Steps**
+Each step prompt will strictly follow the structure: **Step Goal, Input, Recommend Next Step, Output, Success/Failure Criteria**.
+
+**Directory Structure**
+- `steps/schemas/`: Contains JSON schemas for every step output.
+- `runs/<run-id>/<step-id>/`: Isolated execution folder for each step's prompt, response, and artifacts.
+
+Reply with `确认创建` if this plan looks right, and I’ll generate it automatically.
+```

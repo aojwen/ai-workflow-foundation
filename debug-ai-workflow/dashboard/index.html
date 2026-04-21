@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Workflow Debugger</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --bg-hover: #30363d;
+            --border-primary: #30363d;
+            --border-secondary: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent-primary: #58a6ff;
+            --accent-secondary: #1f6feb;
+            --success-primary: #3fb950;
+            --success-bg: rgba(63, 185, 80, 0.15);
+            --error-primary: #f85149;
+            --error-bg: rgba(248, 81, 73, 0.15);
+            --warning-primary: #d29922;
+            --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background-color: var(--bg-secondary);
+            border-right: 1px solid var(--border-primary);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            transition: width 0.3s ease, transform 0.3s ease;
+        }
+
+        .sidebar.collapsed {
+            width: 0;
+            overflow: hidden;
+            border: none;
+        }
+
+        .sidebar-toggle {
+            position: fixed;
+            left: 280px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 60px;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-primary);
+            border-left: none;
+            border-radius: 0 8px 8px 0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            transition: left 0.3s ease;
+        }
+
+        .sidebar-toggle:hover {
+            background-color: var(--bg-hover);
+        }
+
+        .sidebar-toggle svg {
+            width: 14px;
+            height: 14px;
+            color: var(--text-secondary);
+            transition: transform 0.3s ease;
+        }
+
+        body.sidebar-collapsed .sidebar-toggle {
+            left: 0;
+        }
+
+        body.sidebar-collapsed .sidebar-toggle svg {
+            transform: rotate(180deg);
+        }
+
+        .sidebar-collapsed .sidebar {
+            width: 0;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--border-primary);
+        }
+
+        .app-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .app-subtitle {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .controls {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-primary);
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .control-group select {
+            width: 100%;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-primary);
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 12px;
+            font-family: inherit;
+            color: var(--text-primary);
+            cursor: pointer;
+            outline: none;
+        }
+
+        .control-group select:focus {
+            border-color: var(--accent-primary);
+        }
+
+        .control-group select:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .run-button {
+            width: 100%;
+            background: linear-gradient(135deg, var(--accent-secondary), var(--accent-primary));
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 8px;
+        }
+
+        .run-button:hover:not(:disabled) {
+            filter: brightness(1.1);
+        }
+
+        .run-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .run-button.running {
+            background: linear-gradient(135deg, #b08820, #d29922);
+        }
+
+        /* Fixture buttons in sidebar */
+        .fixtures-section {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-primary);
+        }
+
+        .fixtures-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+
+        .fixture-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .fixture-btn {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-primary);
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .fixture-btn:hover {
+            background-color: var(--bg-hover);
+            color: var(--text-primary);
+            border-color: var(--accent-primary);
+        }
+
+        .fixture-btn.active {
+            background-color: var(--accent-secondary);
+            color: white;
+            border-color: var(--accent-primary);
+        }
+
+        /* Main Content - 3 column layout */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .main-header {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-primary);
+            background-color: var(--bg-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .breadcrumb-item.active {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .breadcrumb-separator {
+            color: var(--text-muted);
+        }
+
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .status-indicator.idle { background-color: var(--bg-tertiary); color: var(--text-secondary); }
+        .status-indicator.running { background-color: rgba(210, 153, 34, 0.15); color: var(--warning-primary); }
+        .status-indicator.pass { background-color: var(--success-bg); color: var(--success-primary); }
+        .status-indicator.fail { background-color: var(--error-bg); color: var(--error-primary); }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: currentColor;
+        }
+
+        .status-dot.running {
+            animation: blink 1s ease-in-out infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* Panels Container - Horizontal layout */
+        .panels-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Left Panel - Fixtures (Prompt/Expect/Assertion) */
+        .left-panel {
+            width: 30%;
+            min-width: 200px;
+            max-width: 600px;
+            border-right: 1px solid var(--border-primary);
+            display: flex;
+            flex-direction: column;
+            background-color: var(--bg-secondary);
+        }
+
+        body.sidebar-collapsed .left-panel {
+            min-width: 0;
+            width: 0;
+            max-width: 0;
+            border: none;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            background-color: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-primary);
+            flex-shrink: 0;
+        }
+
+        .panel-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: var(--text-secondary);
+        }
+
+        .tab-buttons {
+            display: flex;
+            gap: 2px;
+            background-color: var(--bg-primary);
+            padding: 3px;
+            border-radius: 6px;
+        }
+
+        .tab-btn {
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-primary);
+            background-color: var(--bg-hover);
+        }
+
+        .tab-btn.active {
+            background-color: var(--accent-secondary);
+            color: white;
+        }
+
+        .fixture-content {
+            flex: 1;
+            overflow: auto;
+            padding: 12px;
+        }
+
+        .fixture-block {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .fixture-block-title {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-secondary);
+        }
+
+        /* Middle Panel - Execution & Response */
+        .middle-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        body.sidebar-collapsed .middle-panel {
+            margin-left: 0;
+        }
+
+        .execution-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--border-primary);
+        }
+
+        .timeline-container {
+            flex: 1;
+            overflow: auto;
+            padding: 16px;
+        }
+
+        .timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .timeline-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            border-radius: 6px;
+        }
+
+        .timeline-icon {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .timeline-icon.pending { background-color: var(--bg-tertiary); color: var(--text-muted); }
+        .timeline-icon.active { background-color: rgba(210, 153, 34, 0.15); color: var(--warning-primary); }
+        .timeline-icon.complete { background-color: var(--success-bg); color: var(--success-primary); }
+        .timeline-icon.error { background-color: var(--error-bg); color: var(--error-primary); }
+
+        .timeline-content { flex: 1; }
+
+        .timeline-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .timeline-desc {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .timeline-time {
+            font-size: 10px;
+            font-family: var(--font-mono);
+            color: var(--text-muted);
+        }
+
+        .response-section {
+            height: 40%;
+            min-height: 150px;
+            border-top: 1px solid var(--border-primary);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .execution-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .response-content {
+            flex: 1;
+            overflow: auto;
+            padding: 12px;
+        }
+
+        .response-block {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Right Panel - Validation */
+        .right-panel {
+            width: 30%;
+            min-width: 200px;
+            max-width: 600px;
+            border-left: 1px solid var(--border-primary);
+            display: flex;
+            flex-direction: column;
+            background-color: var(--bg-secondary);
+        }
+
+        .timing-bar {
+            display: flex;
+            gap: 16px;
+            padding: 8px 14px;
+            background-color: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-primary);
+            font-size: 11px;
+            font-family: var(--font-mono);
+        }
+
+        .timing-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .timing-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .timing-value {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .validation-content {
+            flex: 1;
+            overflow: auto;
+            padding: 12px;
+        }
+
+        .validation-block {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .validation-result {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .validation-result.pass { background-color: var(--success-bg); color: var(--success-primary); }
+        .validation-result.fail { background-color: var(--error-bg); color: var(--error-primary); }
+
+        /* Empty State */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-muted);
+            text-align: center;
+            padding: 20px;
+        }
+
+        .empty-state-icon {
+            width: 40px;
+            height: 40px;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        .empty-state-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .empty-state-desc {
+            font-size: 11px;
+            color: var(--text-muted);
+            max-width: 250px;
+            line-height: 1.5;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-hover);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--border-primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="app-title">AI Workflow Debugger</div>
+                <div class="app-subtitle">Debug individual workflow steps</div>
+            </div>
+
+            <div class="controls">
+                <div class="control-group">
+                    <label for="workflow">Workflow</label>
+                    <select id="workflow">
+                        <option value="">Select Workflow</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="step">Step</label>
+                    <select id="step" disabled>
+                        <option value="">Select Step</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="testcase">Test Case</label>
+                    <select id="testcase" disabled>
+                        <option value="">Select Test Case</option>
+                    </select>
+                </div>
+                <button class="run-button" id="runBtn" disabled>
+                    <span id="runBtnText">Run Test</span>
+                </button>
+            </div>
+
+            <div class="fixtures-section">
+                <div class="fixtures-label">Fixtures</div>
+                <div class="fixture-buttons">
+                    <button class="fixture-btn" id="btnPrompt" disabled>Prompt</button>
+                    <button class="fixture-btn" id="btnExpected" disabled>Expected</button>
+                    <button class="fixture-btn" id="btnAssertions" disabled>Assertions</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Sidebar Toggle Button -->
+        <button class="sidebar-toggle" id="sidebarToggle" title="Toggle Sidebar">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7 7"/>
+            </svg>
+        </button>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="main-header">
+                <div class="breadcrumb" id="breadcrumb">
+                    <span class="breadcrumb-item">Select a workflow to begin</span>
+                </div>
+                <div class="status-bar">
+                    <div class="timing-bar" id="timingBar" style="display: none;">
+                        <div class="timing-item">
+                            <span class="timing-label">Exec</span>
+                            <span class="timing-value" id="execTime">-</span>
+                        </div>
+                        <div class="timing-item">
+                            <span class="timing-label">Valid</span>
+                            <span class="timing-value" id="validTime">-</span>
+                        </div>
+                        <div class="timing-item">
+                            <span class="timing-label">Total</span>
+                            <span class="timing-value" id="totalTime">-</span>
+                        </div>
+                    </div>
+                    <div class="status-indicator idle" id="statusIndicator">
+                        <span class="status-dot"></span>
+                        <span id="statusText">Ready</span>
+                    </div>
+                </div>
+            </header>
+
+            <div class="panels-container">
+                <!-- Left Panel - Fixtures -->
+                <div class="left-panel">
+                    <div class="panel-header">
+                        <div class="panel-title">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            Test Fixtures
+                        </div>
+                    </div>
+                    <div class="fixture-content" id="fixtureContent">
+                        <div class="empty-state">
+                            <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            <div class="empty-state-title">Select a test case</div>
+                            <div class="empty-state-desc">Click Prompt, Expected, or Assertions to view fixture content</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Middle Panel - Execution & Response -->
+                <div class="middle-panel">
+                    <div class="execution-section">
+                        <div class="panel-header">
+                            <div class="panel-title">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                </svg>
+                                Execution Timeline
+                            </div>
+                        </div>
+                        <div class="timeline-container">
+                            <div class="timeline" id="timeline">
+                                <div class="empty-state">
+                                    <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                    </svg>
+                                    <div class="empty-state-title">No execution yet</div>
+                                    <div class="empty-state-desc">Click Run Test to see the execution timeline</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="response-section">
+                        <div class="panel-header">
+                            <div class="panel-title">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                                Agent Response
+                            </div>
+                        </div>
+                        <div class="response-content">
+                            <pre class="response-block" id="responseOut">Select a test case and run to see the agent response...</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Panel - Validation -->
+                <div class="right-panel">
+                    <div class="panel-header">
+                        <div class="panel-title">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            Validation Result
+                        </div>
+                        <span class="validation-result" id="validationBadge" style="display: none;"></span>
+                    </div>
+                    <div class="validation-content">
+                        <pre class="validation-block" id="validationOut">Run a test to see the validation reasoning...</pre>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const workflowSel = document.getElementById('workflow');
+        const stepSel = document.getElementById('step');
+        const testcaseSel = document.getElementById('testcase');
+        const runBtn = document.getElementById('runBtn');
+        const runBtnText = document.getElementById('runBtnText');
+        const sidebarToggle = document.getElementById('sidebarToggle');
+
+        const btnPrompt = document.getElementById('btnPrompt');
+        const btnExpected = document.getElementById('btnExpected');
+        const btnAssertions = document.getElementById('btnAssertions');
+
+        const breadcrumb = document.getElementById('breadcrumb');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const statusDot = statusIndicator.querySelector('.status-dot');
+        const timingBar = document.getElementById('timingBar');
+        const execTime = document.getElementById('execTime');
+        const validTime = document.getElementById('validTime');
+        const totalTime = document.getElementById('totalTime');
+
+        const timeline = document.getElementById('timeline');
+        const responseOut = document.getElementById('responseOut');
+        const validationOut = document.getElementById('validationOut');
+        const validationBadge = document.getElementById('validationBadge');
+        const fixtureContent = document.getElementById('fixtureContent');
+
+        // Store fixture data
+        let currentFixtures = {
+            prompt: '',
+            expected: '',
+            assertions: ''
+        };
+
+        // Sidebar toggle
+        const SIDEBAR_COLLAPSED_KEY = 'debug-dashboard-sidebar-collapsed';
+
+        // Restore sidebar state from localStorage
+        const collapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+        if (collapsed) {
+            document.body.classList.add('sidebar-collapsed');
+        }
+
+        sidebarToggle.addEventListener('click', () => {
+            document.body.classList.toggle('sidebar-collapsed');
+            localStorage.setItem(SIDEBAR_COLLAPSED_KEY, document.body.classList.contains('sidebar-collapsed'));
+        });
+
+        function setStatus(status, text) {
+            statusIndicator.className = 'status-indicator ' + status;
+            statusText.textContent = text;
+            statusDot.className = 'status-dot' + (status === 'running' ? ' running' : '');
+        }
+
+        function renderTimeline(steps) {
+            timeline.innerHTML = steps.map((step, index) => `
+                <div class="timeline-item">
+                    <div class="timeline-icon ${step.status}">
+                        ${getTimelineIcon(step.status)}
+                    </div>
+                    <div class="timeline-content">
+                        <div class="timeline-title">${step.title}</div>
+                        <div class="timeline-desc">${step.description || ''}</div>
+                    </div>
+                    ${step.time ? `<div class="timeline-time">${step.time}</div>` : ''}
+                </div>
+                ${index < steps.length - 1 ? '<div class="timeline-line" style="width:1px;height:12px;background:var(--border-secondary);margin:0 0 0 9px;"></div>' : ''}
+            `).join('');
+        }
+
+        function getTimelineIcon(status) {
+            const icons = {
+                pending: '<svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/></svg>',
+                active: '<svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+                complete: '<svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>',
+                error: '<svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>'
+            };
+            return icons[status] || icons.pending;
+        }
+
+        function showFixture(type) {
+            // Update active button state
+            btnPrompt.classList.remove('active');
+            btnExpected.classList.remove('active');
+            btnAssertions.classList.remove('active');
+
+            if (type === 'prompt') btnPrompt.classList.add('active');
+            else if (type === 'expected') btnExpected.classList.add('active');
+            else if (type === 'assertions') btnAssertions.classList.add('active');
+
+            // Show content
+            let title, content;
+            if (type === 'prompt') {
+                title = 'Prompt';
+                content = currentFixtures.prompt || '(empty)';
+            } else if (type === 'expected') {
+                title = 'Expected Output';
+                content = currentFixtures.expected || '(no expected output defined)';
+            } else {
+                title = 'Assertions';
+                content = currentFixtures.assertions || '(no assertions defined)';
+            }
+
+            fixtureContent.innerHTML = `
+                <div class="fixture-block">
+                    <div class="fixture-block-title">${title}</div>
+                    ${escapeHtml(content)}
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Fixture button handlers
+        btnPrompt.addEventListener('click', () => showFixture('prompt'));
+        btnExpected.addEventListener('click', () => showFixture('expected'));
+        btnAssertions.addEventListener('click', () => showFixture('assertions'));
+
+        // Load Workflows
+        fetch('/api/workflows').then(r => r.json()).then(data => {
+            data.forEach(wf => {
+                const opt = document.createElement('option');
+                opt.value = wf;
+                opt.textContent = wf;
+                workflowSel.appendChild(opt);
+            });
+        });
+
+        workflowSel.addEventListener('change', (e) => {
+            stepSel.innerHTML = '<option value="">Select Step</option>';
+            testcaseSel.innerHTML = '<option value="">Select Test Case</option>';
+            stepSel.disabled = true;
+            testcaseSel.disabled = true;
+            runBtn.disabled = true;
+            btnPrompt.disabled = true;
+            btnExpected.disabled = true;
+            btnAssertions.disabled = true;
+            updateBreadcrumb();
+
+            if (e.target.value) {
+                fetch(`/api/steps?workflow=${e.target.value}`).then(r => r.json()).then(data => {
+                    data.forEach(step => {
+                        const opt = document.createElement('option');
+                        opt.value = step;
+                        opt.textContent = step;
+                        stepSel.appendChild(opt);
+                    });
+                    stepSel.disabled = false;
+                });
+            }
+        });
+
+        stepSel.addEventListener('change', (e) => {
+            testcaseSel.innerHTML = '<option value="">Select Test Case</option>';
+            testcaseSel.disabled = true;
+            runBtn.disabled = true;
+            btnPrompt.disabled = true;
+            btnExpected.disabled = true;
+            btnAssertions.disabled = true;
+            updateBreadcrumb();
+
+            if (e.target.value) {
+                fetch(`/api/test-cases?workflow=${workflowSel.value}&step=${e.target.value}`).then(r => r.json()).then(data => {
+                    data.forEach(tc => {
+                        const opt = document.createElement('option');
+                        opt.value = tc;
+                        opt.textContent = tc;
+                        testcaseSel.appendChild(opt);
+                    });
+                    testcaseSel.disabled = false;
+                });
+            }
+        });
+
+        testcaseSel.addEventListener('change', async (e) => {
+            runBtn.disabled = !e.target.value;
+            updateBreadcrumb();
+
+            // Load fixtures when test case is selected
+            if (e.target.value) {
+                try {
+                    const res = await fetch(`/api/fixtures?workflow=${workflowSel.value}&step=${stepSel.value}&test_case=${e.target.value}`);
+                    const data = await res.json();
+                    currentFixtures = {
+                        prompt: data.prompt || '',
+                        expected: data.expected || '',
+                        assertions: data.assertions || ''
+                    };
+                    btnPrompt.disabled = false;
+                    btnExpected.disabled = false;
+                    btnAssertions.disabled = false;
+                    showFixture('prompt'); // Default to showing prompt
+                } catch (err) {
+                    console.error('Failed to load fixtures:', err);
+                }
+            }
+        });
+
+        function updateBreadcrumb() {
+            const wf = workflowSel.value;
+            const step = stepSel.value;
+            const tc = testcaseSel.value;
+
+            if (!wf) {
+                breadcrumb.innerHTML = '<span class="breadcrumb-item">Select a workflow to begin</span>';
+                return;
+            }
+
+            let html = `<span class="breadcrumb-item">${wf}</span><span class="breadcrumb-separator">/</span>`;
+
+            if (step) {
+                html += `<span class="breadcrumb-item">${step}</span>`;
+                if (tc) {
+                    html += `<span class="breadcrumb-separator">/</span><span class="breadcrumb-item active">${tc}</span>`;
+                }
+            } else {
+                html += '<span class="breadcrumb-item active">Select step</span>';
+            }
+
+            breadcrumb.innerHTML = html;
+        }
+
+        runBtn.addEventListener('click', async () => {
+            const payload = {
+                workflow: workflowSel.value,
+                step: stepSel.value,
+                test_case: testcaseSel.value
+            };
+
+            runBtn.classList.add('running');
+            runBtn.disabled = true;
+            runBtnText.textContent = 'Running...';
+            setStatus('running', 'Running test');
+            timingBar.style.display = 'none';
+
+            renderTimeline([
+                { status: 'active', title: 'Initializing', description: 'Preparing test environment' },
+                { status: 'pending', title: 'Executing Agent', description: 'Running claude -p' },
+                { status: 'pending', title: 'Validating Output', description: 'Checking assertions' }
+            ]);
+
+            responseOut.textContent = 'Executing...';
+            validationOut.textContent = 'Waiting for agent response...';
+            validationBadge.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+
+                if (data.status === 'error') {
+                    renderTimeline([
+                        { status: 'complete', title: 'Initializing' },
+                        { status: 'error', title: 'Execution Failed', description: data.message }
+                    ]);
+                    setStatus('fail', 'Error');
+                    responseOut.textContent = data.message;
+                    runBtn.classList.remove('running');
+                    runBtn.disabled = false;
+                    runBtnText.textContent = 'Run Test';
+                    return;
+                }
+
+                renderTimeline([
+                    { status: 'complete', title: 'Initializing' },
+                    { status: 'complete', title: 'Executing Agent', time: `${data.execution_time.toFixed(2)}s` },
+                    { status: data.passed ? 'complete' : 'error', title: 'Validating Output', time: `${data.validation_time.toFixed(2)}s` }
+                ]);
+
+                setStatus(data.passed ? 'pass' : 'fail', data.passed ? 'Passed' : 'Failed');
+
+                execTime.textContent = `${data.execution_time.toFixed(2)}s`;
+                validTime.textContent = `${data.validation_time.toFixed(2)}s`;
+                totalTime.textContent = `${(data.execution_time + data.validation_time).toFixed(2)}s`;
+                timingBar.style.display = 'flex';
+
+                validationBadge.className = 'validation-result ' + (data.passed ? 'pass' : 'fail');
+                validationBadge.textContent = data.passed ? 'PASS' : 'FAIL';
+                validationBadge.style.display = 'inline-flex';
+
+                responseOut.textContent = data.response;
+                validationOut.textContent = data.validation_reasoning;
+
+            } catch (err) {
+                renderTimeline([
+                    { status: 'complete', title: 'Initializing' },
+                    { status: 'error', title: 'Network Error', description: err.toString() }
+                ]);
+                setStatus('fail', 'Network Error');
+                responseOut.textContent = err.toString();
+            } finally {
+                runBtn.classList.remove('running');
+                runBtn.disabled = false;
+                runBtnText.textContent = 'Run Test';
+            }
+        });
+    </script>
+</body>
+</html>
