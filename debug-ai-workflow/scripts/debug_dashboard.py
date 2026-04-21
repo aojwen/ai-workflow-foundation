@@ -109,6 +109,8 @@ class DebugHandler(SimpleHTTPRequestHandler):
             test_case = query.get('test_case', [''])[0]
             self.send_json(self.get_fixtures(workflow, step, test_case))
         else:
+            # Serve static files from dashboard directory
+            os.chdir(self.dashboard_dir)
             super().do_GET()
 
     def do_POST(self):
@@ -148,13 +150,15 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--project-root", default=".")
     args = parser.parse_args()
-    
+
     script_dir = Path(__file__).parent.absolute()
     DebugHandler.project_root = args.project_root
     DebugHandler.dashboard_dir = str(script_dir.parent / "dashboard")
 
+    os.chdir(DebugHandler.dashboard_dir)
     httpd = HTTPServer(('', args.port), DebugHandler)
     webbrowser.open(f"http://localhost:{args.port}")
+    print(f"Dashboard serving from: {DebugHandler.dashboard_dir}")
     httpd.serve_forever()
 
 if __name__ == "__main__":
