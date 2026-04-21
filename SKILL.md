@@ -9,9 +9,9 @@ Use this skill to debug individual steps of an AI workflow in isolation. This sk
 
 ## Design Principles
 
-- **Isolation:** Debug exactly one step at a time without affecting the main run state.
+- **Isolation:** Debug exactly one step at a time without affecting the main execution `runs/` directory.
 - **Markdown Fixtures:** Use human-readable Markdown files for prompts, expected outputs, and assertions.
-- **Agent Execution:** The scripts use the `claude -p` CLI command to execute the sub-agent and perform assertions.
+- **Step Contracts:** Debugging tests whether the step correctly executes its `Instructions`, outputs a flat JSON matching its `schema`, and correctly evaluates its own `success` boolean.
 
 ## Execution Modes
 
@@ -23,7 +23,7 @@ If the user asks to debug a workflow or step without specifying a mode, default 
 - **Behavior:**
   - If a specific test case isn't mentioned, run all test cases for that step.
   - Read the results from the CLI output and summarize them for the user.
-  - The script internally uses `claude -p` to execute and validate, generating an HTML report.
+  - The script validates the sub-agent's JSON output (including the `success` field) against the `assertions.md`.
 
 ### 2. Interactive Mode (Dashboard)
 If the user explicitly asks for the "dashboard", "UI", or "interactive mode".
@@ -31,26 +31,30 @@ If the user explicitly asks for the "dashboard", "UI", or "interactive mode".
 - **Behavior:**
   - The script will automatically open the user's default web browser to the dashboard.
   - The user can select workflows, steps, and test cases visually.
-  - Clicking "Run Test" in the UI triggers the `claude -p` logic.
-  - The agent should inform the user that the dashboard is running in the background and they can interact with it in their browser.
+  - Clicking "Run Test" in the UI triggers the test logic.
 
-## Debug Artifacts (Logging)
+## Directory Structure (Project Root)
 
-Regardless of the execution mode used (CLI or Dashboard), the results of every debug execution are permanently recorded in the project root under the `debugs/` directory.
+All debugging execution results live in the `debugs/` folder at the root of the project, while definitions remain in `.ai-workflows/`.
 
-**Directory Structure:**
 ```text
-debugs/
+.ai-workflows/
+  <workflow-id>/
+    fixtures/
+      <step-id>/
+        <test-case>/
+          prompt.md         # Static Definition
+          expected.md       # Static Definition
+          assertions.md     # Static Definition
+
+debugs/                     <-- Execution Outputs
   <workflow-id>/
     <step-id>/
       <test-case>/
-        response.md       # The raw output from the sub-agent
-        validation.md     # The validation reasoning and decision
-        result.json       # Execution metadata (time, status, etc.)
+        <run-id>/           <-- Isolated Debug Run (Timestamp)
+          sub-agent-prompt.md # The composite prompt sent to sub-agent
+          response.json     # The raw flat JSON output
+          validation.md     # The orchestrator's validation reasoning
+          result.json       # Metadata (pass/fail, time)
+          <artifacts>       # Any files generated during this debug run
 ```
-
-## Fixture Structure
-
-- `fixtures/<step-id>/<test-case>/prompt.md`: The exact prompt provided to the sub-agent.
-- `fixtures/<step-id>/<test-case>/expected.md`: A descriptive summary of what the output should look like.
-- `fixtures/<step-id>/<test-case>/assertions.md`: Markdown-based success criteria for the validation agent.

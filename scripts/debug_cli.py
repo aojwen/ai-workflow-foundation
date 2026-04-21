@@ -6,183 +6,111 @@ import subprocess
 import time
 from pathlib import Path
 
-def run_claude(prompt: str) -> str:
-    """Execute a prompt using the claude CLI."""
-    try:
-        # Using -p for prompt input. We write prompt to a temp file to avoid shell escaping issues.
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md') as f:
-            f.write(prompt)
-            temp_path = f.name
-            
-        result = subprocess.run(
-            ["claude", "-p", f"$(cat {temp_path})"], # Assuming claude CLI can take piped or substituted input, but direct file passing might be better.
-            # Actually, standard way if it takes -p "string":
-            # subprocess.run(["claude", "-p", prompt])
-            # But prompt might be very long. Let's try direct text.
-            ["claude", "-p", prompt],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        os.remove(temp_path)
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        return f"Error executing claude: {e.stderr}"
-    except FileNotFoundError:
-        return "Error: 'claude' CLI not found. Please ensure it is installed and in your PATH."
+# The standardized "Main Agent Prompt" for Debug Mode
+DEBUG_EXECUTION_WRAPPER = """You are a sub-agent executing a workflow step in DEBUG MODE.
 
-def execute_test_case(workflow_id: str, step_id: str, test_case: str, project_root: str) -> dict:
-    base_dir = Path(project_root) / ".ai-workflows" / workflow_id / "fixtures" / step_id / test_case
-    
-    prompt_file = base_dir / "prompt.md"
-    expected_file = base_dir / "expected.md"
-    assertions_file = base_dir / "assertions.md"
-    
-    if not prompt_file.exists():
-        return {"status": "error", "message": f"Prompt file not found: {prompt_file}"}
+CRITICAL WORKSPACE INSTRUCTION:
+You MUST save all generated files, artifacts, and complex data structures to the following isolated directory:
+{workspace_dir}
+Do NOT save files to any other location. Return the absolute file paths in your final flat JSON response.
 
-    prompt_content = prompt_file.read_text(encoding="utf-8")
-    expected_content = expected_file.read_text(encoding="utf-8") if expected_file.exists() else ""
-    assertions_content = assertions_file.read_text(encoding="utf-8") if assertions_file.exists() else ""
+--- ORIGINAL STEP PROMPT BELOW ---
 
-    print(f"[{test_case}] Executing sub-agent task...")
-    start_time = time.time()
-    response = run_claude(prompt_content)
-    exec_time = time.time() - start_time
+{step_prompt}
+"""
 
-    print(f"[{test_case}] Validating response...")
-    validation_prompt = f"""
-You are the Main Orchestrator Agent evaluating a sub-agent's output.
+DEBUG_VALIDATION_PROMPT = """You are the Main Orchestrator Agent evaluating a sub-agent's debug output.
 
-# Step Expected Output
+# Validation Task
+Analyze the sub-agent's response against the expected outcome and specific assertions.
+Ensure the sub-agent correctly followed the Workspace Instructions and provided a valid 'success' boolean.
+
+# Expected Outcome
 {expected_content}
 
-# Assertions to Check
+# Assertions
 {assertions_content}
 
 # Sub-Agent Response
 {response}
 
-Evaluate the response against the assertions.
-Provide your reasoning, and end your response with exactly one of these words on a new line:
-RESULT_PASS
-RESULT_FAIL
+Evaluate strictly. Provide reasoning and end with:
+RESULT_PASS or RESULT_FAIL
 """
+
+def run_claude(prompt: str, project_root: str = ".") -> str:
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--dangerously-skip-permissions"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=project_root
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        return f"Error executing claude: {e.stderr}"
+    except FileNotFoundError:
+        return "Error: 'claude' CLI not found in PATH."
+
+def execute_test_case(workflow_id: str, step_id: str, test_case: str, project_root: str) -> dict:
+    base_project = Path(project_root).expanduser().resolve()
+    fixture_dir = base_project / ".ai-workflows" / workflow_id / "fixtures" / step_id / test_case
+    
+    # 1. Read static definition
+    prompt_content = (fixture_dir / "prompt.md").read_text(encoding="utf-8")
+    expected_content = (fixture_dir / "expected.md").read_text(encoding="utf-8") if (fixture_dir / "expected.md").exists() else ""
+    assertions_content = (fixture_dir / "assertions.md").read_text(encoding="utf-8") if (fixture_dir / "assertions.md").exists() else ""
+
+    # 2. Setup isolated run directory: debugs/<workflow-id>/<step-id>/<test-case>/<run-id>/
+    import datetime
+    run_id = datetime.datetime.now().strftime("run-%Y%m%d-%H%M%S")
+    debug_run_dir = base_project / "debugs" / workflow_id / step_id / test_case / run_id
+    debug_run_dir.mkdir(parents=True, exist_ok=True)
+
+    # 3. Spawn Sub-Agent with Wrapper
+    print(f"[{test_case}] Run ID: {run_id}")
+    print(f"[{test_case}] Spawning Sub-Agent...")
+    final_prompt = DEBUG_EXECUTION_WRAPPER.format(workspace_dir=debug_run_dir.absolute(), step_prompt=prompt_content)
+    
+    start_time = time.time()
+    response = run_claude(final_prompt, project_root)
+    exec_time = time.time() - start_time
+
+    # 4. Validate Output
+    print(f"[{test_case}] Validating Results...")
+    val_prompt = DEBUG_VALIDATION_PROMPT.format(expected_content=expected_content, assertions_content=assertions_content, response=response)
+    
     val_start = time.time()
-    validation_response = run_claude(validation_prompt)
+    val_response = run_claude(val_prompt, project_root)
     val_time = time.time() - val_start
 
-    passed = "RESULT_PASS" in validation_response
-
-    import datetime
-    timestamp = datetime.datetime.now().isoformat()
-    debug_out_dir = Path(project_root) / "debugs" / workflow_id / step_id / test_case
-    debug_out_dir.mkdir(parents=True, exist_ok=True)
+    passed = "RESULT_PASS" in val_response
     
-    (debug_out_dir / "response.md").write_text(response, encoding="utf-8")
-    (debug_out_dir / "validation.md").write_text(validation_response, encoding="utf-8")
+    # 5. Record Logs
+    (debug_run_dir / "sub-agent-prompt.md").write_text(final_prompt, encoding="utf-8")
+    (debug_run_dir / "response.json").write_text(response, encoding="utf-8")
+    (debug_run_dir / "validation.md").write_text(val_response, encoding="utf-8")
     
-    result_dict = {
-        "status": "success",
-        "test_case": test_case,
-        "prompt": prompt_content,
-        "response": response,
-        "validation_reasoning": validation_response,
+    result = {
         "passed": passed,
         "execution_time": exec_time,
         "validation_time": val_time,
-        "timestamp": timestamp
+        "workspace": str(debug_run_dir)
     }
-    
-    (debug_out_dir / "result.json").write_text(json.dumps(result_dict, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    return result_dict
-
-def generate_html_report(workflow: str, step: str, results: list, out_path: Path):
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Debug Report: {workflow} / {step}</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; color: #333; background: #f5f5f7; }}
-        h1 {{ font-weight: 600; }}
-        .card {{ background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
-        .pass {{ color: #34c759; font-weight: bold; }}
-        .fail {{ color: #ff3b30; font-weight: bold; }}
-        pre {{ background: #f8f9fa; padding: 10px; border-radius: 8px; white-space: pre-wrap; font-size: 13px; }}
-        .times {{ color: #8e8e93; font-size: 12px; }}
-    </style>
-</head>
-<body>
-    <h1>Debug Report: {workflow} > {step}</h1>
-"""
-    for res in results:
-        status_class = "pass" if res.get("passed") else "fail"
-        status_text = "PASS" if res.get("passed") else "FAIL"
-        
-        if res.get("status") == "error":
-             html += f"""
-             <div class="card">
-                 <h2>{res['test_case']} - <span class="fail">ERROR</span></h2>
-                 <p>{res.get('message')}</p>
-             </div>
-             """
-             continue
-
-        html += f"""
-    <div class="card">
-        <h2>{res['test_case']} - <span class="{status_class}">{status_text}</span></h2>
-        <div class="times">Execution: {res['execution_time']:.2f}s | Validation: {res['validation_time']:.2f}s</div>
-        
-        <h3>Response</h3>
-        <pre>{res['response']}</pre>
-        
-        <h3>Validation Details</h3>
-        <pre>{res['validation_reasoning']}</pre>
-    </div>
-"""
-    html += "</body></html>"
-    out_path.write_text(html, encoding="utf-8")
-    print(f"\nReport generated: {out_path.absolute()}")
+    (debug_run_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
 
 def main():
-    parser = argparse.ArgumentParser(description="Run AI Workflow step tests via CLI.")
-    parser.add_argument("--workflow", required=True, help="Workflow ID")
-    parser.add_argument("--step", required=True, help="Step ID")
-    parser.add_argument("--test-case", help="Specific test case to run. If omitted, runs all.")
-    parser.add_argument("--project-root", default=".", help="Project root directory")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workflow", required=True)
+    parser.add_argument("--step", required=True)
+    parser.add_argument("--test-case", default="happy-path")
+    parser.add_argument("--project-root", default=".")
     args = parser.parse_args()
 
-    step_dir = Path(args.project_root) / ".ai-workflows" / args.workflow / "fixtures" / args.step
-    if not step_dir.exists():
-        print(f"Error: Step fixtures directory not found: {step_dir}")
-        return
-
-    test_cases = []
-    if args.test_case:
-        test_cases = [args.test_case]
-    else:
-        test_cases = [d.name for d in step_dir.iterdir() if d.is_dir()]
-
-    if not test_cases:
-        print(f"No test cases found for step {args.step}")
-        return
-
-    results = []
-    for tc in test_cases:
-        print(f"\n--- Running: {tc} ---")
-        res = execute_test_case(args.workflow, args.step, tc, args.project_root)
-        results.append(res)
-        if res.get('passed'):
-            print("Status: PASS")
-        elif res.get('status') == 'error':
-            print(f"Status: ERROR ({res.get('message')})")
-        else:
-            print("Status: FAIL")
-
-    report_path = Path(args.project_root) / f"debug_report_{args.workflow}_{args.step}.html"
-    generate_html_report(args.workflow, args.step, results, report_path)
+    res = execute_test_case(args.workflow, args.step, args.test_case, args.project_root)
+    print(f"Result: {'PASS' if res['passed'] else 'FAIL'}")
 
 if __name__ == "__main__":
     main()
