@@ -5,105 +5,50 @@ description: Guided creation of isolated, step-based AI workflows. Use this skil
 
 # Create AI Workflow
 
-Use this skill to design and scaffold a new AI workflow. This skill follows an orchestration model where a main agent manages routing and state, while specialized sub-agents execute individual steps.
+Use this skill to design and scaffold a new AI workflow. This skill follows an **Admission Control** model where steps are triggered based on satisfying specific pre-conditions defined in a DAG-based routing table.
 
 ## Design Principles
 
-- **Main Agent Orchestration:** The main agent is responsible for coordination, evaluating routing tables (DAG), generating a unique `run-id` (e.g., timestamp-based), and updating the global run state in `state.md`.
-- **Sub-Agent Execution:** Every workflow step MUST be executed by a sub-agent. The sub-agent calculates the next steps but the main agent performs the actual transition after evaluating input conditions and DAG dependencies.
-- **Strict Step Structure:** Each step prompt must follow a standardized structure: Step Goal, Input, Instructions, Recommend Next Steps, Output, Success/Failure Criteria.
-- **Workspace Isolation:** Every step execution must have its own working directory: `runs/<workflow-id>/<run-id>/<step-id>/`. The path MUST be passed as `workDir` to the sub-agent.
-- **Schema-Based Outputs:** Every step must define a JSON schema for its output. Outputs are flat JSON containing only workflow indicators and paths to complex artifacts. Outputs MUST be globally unique across the entire workflow to avoid state collision.
-- **Markdown State:** The run state is maintained in `state.md`. It tracks `active_steps`, `completed_steps`, and `pending_signals`. Record complete step outcomes (including field descriptions) in the body.
+- **Reactive Orchestration:** The main agent coordinates execution but **DOES NOT** compute routing logic. Every step completion emits `nextSteps` (signals).
+- **Admission Control (DAG Routing):** The routing rules are strictly maintained in a standalone `routing.json` file. This hides complex DAG logic from the main agent to prevent hallucination. A python script evaluates this file to trigger steps if:
+  1. It has been signaled (is in `pending_signals`).
+  2. **OR Logic**: At least one "Condition Set" in its `routing.json` entry is satisfied.
+  3. **AND Logic (within a Set)**: All `depends_on` steps are completed AND all `required_inputs` match the expected values in `state.md`.
+- **Global Variable Uniqueness:** All output attributes (except framework fields like `success`, `nextSteps`) MUST be globally unique across the entire workflow to prevent state collisions.
+- **Strict Step Structure:** Each step prompt follows: Step Goal, Input (including `workDir`), Instructions, Recommend Next Steps (array), Output, Success/Failure Criteria.
+- **Markdown State:** `state.md` tracks `active_steps`, `completed_steps`, and `pending_signals` in frontmatter. Results are appended to the body.
 
 ## When to use
 
 - You need to create a new AI workflow from scratch.
-- You want to refactor a complex task into a structured, multi-step workflow.
-- You want to transform an existing workflow into this structured format while preserving its context and reference documents.
-- You need to define clear contracts and test cases for an agentic process.
+- You need to support complex branching, parallel execution, or merging (Join) logic.
 
 ## Workflow Creation Process
 
-### 1. Discovery (Pre-initialization)
-Before writing any files, you MUST clarify all necessary details with the user:
-- **Workflow Identity:** A clear name and unique ID (slug).
-- **Goal:** The ultimate objective of the workflow.
-- **Steps:** A complete list of steps.
-- **Step Details:** For EACH step, define:
-  - **Step Goal:** Specific task for this step.
-  - **Input:** Dynamic context needed, including the mandatory `workDir`.
-  - **Recommend Next Steps:** How this step suggests the next transitions (as an array of strings).
-  - **Output:** Flat JSON structure + JSON Schema file. **Ensure variable names are globally unique across all workflow steps.**
-  - **Success/Failure Criteria:** Acceptance standards.
+### 1. Discovery
+Clarify with the user:
+- **Workflow ID & Goal**.
+- **Steps & Routing Table**: Define the admission conditions (OR/AND logic) for each step.
+- **Step Contracts**: Define inputs, globally unique outputs, and success criteria for each step.
 
-### 2. Refactoring/Transformation Guidelines
-When transforming an existing workflow or design:
-- **No Information Loss:** DO NOT aggressively compress or omit information from the original workflow. Ensure all business logic and edge cases are preserved in the new `Instructions` sections.
-- **Reference Migration:** If the original workflow references external documents, guides, or examples, migrate these to the new workflow's `references/` directory or embed them directly into the relevant `steps/` if small.
-- **Asset Preservation:** Ensure any non-code assets (prompts, data samples) are kept and correctly paths are updated.
+### 2. Confirmation Summary
+Present the plan using `templates/confirmation-summary.template.md`. **Explicitly highlight the Admission Control logic and global variable names.**
 
-### 3. Confirmation Summary
-Present a structured plan to the user for approval. Use the `templates/confirmation-summary.template.md` format.
-
-### 4. Scaffolding (Post-confirmation)
-Once confirmed, generate the workflow structure:
-- `orchestration.md`: The source of truth for routing, containing the DAG `routing_table`.
-- `steps/step-NN-<name>.md`: Standardized instruction sets for sub-agents.
-- `steps/schemas/step-NN-<name>.schema.json`: Output schema for the step.
-- `fixtures/<step-id>/<test-case-name>/`: Markdown-based test cases.
+### 3. Scaffolding
+Generate:
+- `orchestration.md`: Contains the Main Agent's execution contract (Goal and Entry Step).
+- `routing.json`: Contains the complete array-based Condition Sets for DAG admission control.
+- `steps/*.md` and `steps/schemas/*.json`.
+- `fixtures/` for test-driven development.
 
 ## Standard Directory Layout
-
 ```text
 .ai-workflows/<workflow-id>/
-  orchestration.md          # Main agent's routing logic & DAG table
-  workflow.spec.json        # Metadata about the workflow
-  references/               # Migrated reference documents and guides
+  orchestration.md          # Machine Contract (Entry Step ONLY)
+  routing.json              # Admission Control DAG definition
+  workflow.spec.json        # Metadata
   steps/
-    step-01-discovery.md    # Standardized instructions
-    step-02-processing.md
-    schemas/
-      step-01-discovery.schema.json
-  fixtures/
-    step-01-discovery/
-      happy-path/
-        prompt.md           # Input to sub-agent
-        expected.md         # Descriptive expectation
-        assertions.md       # Markdown criteria for main agent
-  runs/                     # Directory for execution state (example/gitkeep)
-```
-
-## Step Prompt Structure
-
-Each step file in `steps/` MUST follow this standardized structure.
-
-```markdown
-# Step: <step-id>
-
-## Step Goal
-<Specific task definition for this step>
-
-## Input
-<List of required dynamic context with descriptions>
-- **workDir**: The absolute path to the working directory for this step (`runs/<workflow-id>/<run-id>/<step-id>/`).
-- **<Input Name>**: <Description>
-
-## Instructions
-<The core "how-to". Detailed business logic, execution rules, and steps the sub-agent must follow. Reference any documents in `references/` if applicable.>
-
-## Recommend Next Steps
-<Logic to determine the next step IDs, returning an array of strings>
-
-## Output
-<Flat JSON structure reference>
-- **JSON Schema**: `steps/schemas/<step-id>.schema.json`
-- **Fields**:
-  - `success`: (Boolean) True if Success Criteria are met.
-  - `nextSteps`: (Array of Strings) The IDs of the next steps.
-  - `schema`: Path to the JSON schema.
-  - <other-business-fields (Must be globally unique)>
-
-## Success/Failure Criteria
-<Standards for completion. The sub-agent evaluates these to set the 'success' boolean.>
+    step-NN-<name>.md       # Instruction sets
+    schemas/                # JSON schemas
+  fixtures/                 # Markdown-based test cases
 ```

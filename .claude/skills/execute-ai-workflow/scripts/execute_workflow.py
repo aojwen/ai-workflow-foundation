@@ -26,7 +26,7 @@ def default_submission_path(workflow_dir: Path, run_id: str, step_id: str) -> Pa
 def starter_output_template(step_contract: dict[str, Any]) -> dict[str, Any]:
     outputs = step_contract.get("outputs_written", [])
     template: dict[str, Any] = {
-        "step_id": step_contract["step_id"] if "step_id" in step_contract else "unknown",
+        "step_id": step_contract.get("step_id", "unknown"),
         "nextSteps": step_contract.get("recommended_next_steps", []),
     }
     for name in outputs:
@@ -45,7 +45,7 @@ def build_step_packet(workflow_dir: Path, run_id: str, state: dict[str, Any]) ->
         return {
             "mode": "execute",
             "run_id": run_id,
-            "workflow_id": state["workflow_id"],
+            "workflow_id": state.get("workflow_id", "unknown"),
             "status": state.get("status", "completed"),
             "completed_steps": state.get("completed_steps", []),
             "message": "Workflow is complete or deadlocked.",
@@ -88,11 +88,11 @@ def build_step_packet(workflow_dir: Path, run_id: str, state: dict[str, Any]) ->
 
     return {
         "mode": "execute",
-        "workflow_id": state["workflow_id"],
+        "workflow_id": state.get("workflow_id", "unknown"),
         "workflow_dir": str(workflow_dir),
-        "orchestration_file": orchestration["_path"],
+        "orchestration_file": orchestration.get("_path", ""),
         "run_id": run_id,
-        "status": state["status"],
+        "status": state.get("status", "ready"),
         "active_steps": steps_data
     }
 
@@ -103,23 +103,12 @@ def advance_once(workflow_dir: Path, run_id: str, step_id: str, step_output_file
 
 
 def ensure_run(workflow_dir: Path, run_id: str | None = None) -> str:
-    from run_workflow import command_start
     import argparse
-    
     if run_id:
         state_path = run_dir(workflow_dir, run_id) / "state.md"
         if state_path.exists():
             return run_id
             
-        json_path = run_dir(workflow_dir, run_id) / "state.json"
-        if json_path.exists():
-            return run_id
-
-    # If not exists or no run_id, initialize via command_start equivalent
-    args = argparse.Namespace(workflow_ref=str(workflow_dir), project_root=".", run_id=run_id)
-    # We use subprocess or just call command_start directly, but we want to intercept stdout.
-    # Actually, simpler to just use command_start but we don't want it to print.
-    # Let's just inline the start logic if needed, or use run_id returned.
     from run_workflow import load_orchestration, save_state_full, append_event, utc_stamp
     from datetime import datetime, timezone
     
@@ -142,11 +131,6 @@ def ensure_run(workflow_dir: Path, run_id: str | None = None) -> str:
     
     body = f"# Workflow Run State: {orchestration['workflow_id']}\n\n## Step Outcomes\n"
     save_state_full(workflow_dir, chosen_run_id, state, body)
-    
-    append_event(
-        run_dir(workflow_dir, chosen_run_id) / "events.ndjson",
-        {"ts": state["updated_at"], "type": "run_started", "run_id": chosen_run_id, "active_steps": [first_step]},
-    )
     return chosen_run_id
 
 

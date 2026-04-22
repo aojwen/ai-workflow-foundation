@@ -5,13 +5,17 @@ description: Isolated debugging and testing of AI workflow steps. Use this skill
 
 # Debug AI Workflow
 
-Use this skill to debug individual steps of an AI workflow in isolation. This skill leverages Markdown-based test fixtures to provide repeatable and descriptive testing.
+Use this skill to debug individual steps of an AI workflow in isolation. This skill leverages Markdown-based test fixtures to provide repeatable and descriptive testing, ensuring each step fulfills its contract before integration.
 
 ## Design Principles
 
 - **Isolation:** Debug exactly one step at a time without affecting the main execution `runs/` directory.
 - **Markdown Fixtures:** Use human-readable Markdown files for prompts, expected outputs, and assertions.
-- **Step Contracts:** Debugging tests whether the step correctly executes its `Instructions`, outputs a flat JSON matching its `schema` (including globally unique custom variables), correctly evaluates its own `success` boolean, and emits a valid `nextSteps` array for DAG routing.
+- **Contract Validation:** Debugging ensures the step correctly:
+  1. Executes its `Instructions`.
+  2. Outputs a flat JSON matching its `schema` (including globally unique custom variables).
+  3. Correctly evaluates its own `success` boolean.
+  4. Emits a valid `nextSteps` array for the Admission Control engine.
 - **Workspace Injection:** The debugging environment injects a temporary `{workDir}` into the sub-agent prompt and ensures artifacts are saved properly to that directory.
 
 ## Execution Modes
