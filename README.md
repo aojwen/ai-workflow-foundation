@@ -1,183 +1,288 @@
 # AI Workflow Foundation
 
-一套用于创建、执行和调试基于步骤的 AI 工作流的 Claude Code 技能集合。
+一套基于 **Admission Control（准入控制）** 模型的多步骤 AI 工作流框架。通过主代理（Main Agent）协调、子代理（Sub-Agent）执行、DAG 路由表驱动的方式，实现复杂的、可测试的工作流编排。
 
-## 项目结构
+## 核心架构理念
+
+### 1. Admission Control 模型
+
+传统的工作流由主代理决定下一步执行什么，而本框架采用 **Admission Control** 模型：
+
+- **主代理是纯执行者**：只负责查看 `active_steps`、派生子代理、提交结果
+- **路由逻辑外置**：`routing.json` 文件定义 DAG 准入条件，对主代理隐藏
+- **信号驱动**：每个步骤完成时发出 `nextSteps` 信号到 `pending_signals`
+- **自动准入扫描**：执行引擎扫描 `routing.json`，满足条件的步骤自动进入 `active_steps`
 
 ```
-ai-workflow-foundation/
-├── create-ai-workflow/    # 工作流创建技能
-├── execute-ai-workflow/   # 工作流执行技能
-└── debug-ai-workflow/     # 工作流调试技能
+┌─────────────────────────────────────────────────────────────────┐
+│                    Main Agent (Executor)                        │
+│  - 读取 active_steps                                            │
+│  - 派生子代理执行步骤                                           │
+│  - 提交结果到执行引擎                                           │
+│  - 不计算路由逻辑                                               │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Execution Engine (routing.json 驱动)                │
+│  - 接收步骤完成的 nextSteps 信号                                 │
+│  - 扫描 routing.json 中的条件集                                  │
+│  - OR 逻辑：任一条件集满足即可准入                               │
+│  - AND 逻辑：条件集内 depends_on 和 required_inputs 必须同时满足   │
+│  - 更新 active_steps                                            │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## 三个技能的关系
+### 2. 全局变量唯一性
 
+所有步骤输出的自定义字段（除 `success`、`nextSteps`、`schema` 外）必须在全局范围内唯一，避免状态碰撞。
+
+### 3. 工作区隔离
+
+每个步骤执行在隔离的目录中：
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   create-ai     │ ──▶│   execute-ai    │ ──▶│   debug-ai      │
-│   workflow      │    │   workflow      │    │   workflow      │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-     创建和 scaffold         执行和编排            隔离调试和测试
-```
-
-1. **create-ai-workflow** - 设计并 scaffold 新的 AI 工作流
-2. **execute-ai-workflow** - 运行已创建的工作流，管理状态和路由
-3. **debug-ai-workflow** - 调试工作流中的单个步骤
-
-## 核心设计理念
-
-### Agent-First 编排模型
-
-- **主 Agent** - 负责编排、路由、状态管理
-- **子 Agent** - 执行具体的业务逻辑步骤
-- **职责分离** - 主 Agent 不执行业务逻辑，子 Agent 不负责路由决策
-
-### Markdown Fixtures
-
-使用人类可读的 Markdown 文件定义测试用例，而非严格的 JSON：
-
-```text
-fixtures/<step-id>/<test-case>/
-  prompt.md       # 子 Agent 输入
-  expected.md     # 期望输出描述
-  assertions.md   # 验证标准
+runs/<workflow-id>/<run-id>/<step-id>/
+  ├── sub-agent-prompt.md    # 确切的子代理提示
+  ├── response.json          # 原始 JSON 输出
+  └── <artifacts...>         # 生成的文件
 ```
 
-### 隔离性
+## 三个核心 Skill
 
-每个步骤都是独立单元：
-- 明确的输入输出契约
-- 可独立调试和测试
-- 不影响全局运行状态
+### create-ai-workflow
 
-### 状态可追溯
+**用途**：从 0 开始设计并搭建新的 AI 工作流。
 
-- Prompt 和 Response 完整记录
-- 每次执行生成可追溯的状态文件
-- 支持从任意步骤恢复执行
+**何时使用**：
+- 需要创建一个新的多步骤 AI 工作流
+- 需要支持复杂分支、并行执行或汇合（Join）逻辑
 
-## 快速开始
+**生成内容**：
+- `orchestration.md` - 主代理执行合约（仅定义入口步骤）
+- `routing.json` - DAG 准入控制路由表
+- `workflow.spec.json` - 工作流元数据
+- `steps/*.md` - 每个步骤的指令集
+- `steps/schemas/*.json` - 输出 JSON Schema
+- `fixtures/` - Markdown 测试用例
 
-### 1. 创建工作流
+**核心脚本**：
+- `scripts/init_workflow.py` - 脚手架生成
 
-```bash
-/claude 创建一个新的工作流，用于自动生成代码审查意见
+---
+
+### execute-ai-workflow
+
+**用途**：端到端执行 AI 工作流。
+
+**执行流程**：
+1. **初始化**：生成唯一 `run-id`，创建 `state.md`，设置入口步骤
+2. **执行步骤**：主代理查看 `active_steps`，派生子代理执行
+3. **结果提交**：子代理返回 JSON 后，提交到执行引擎
+4. **准入扫描**：执行引擎读取 `routing.json`，更新 `active_steps`
+5. **循环**：重复直到 `active_steps` 为空
+
+**目录结构**：
 ```
-
-### 2. 执行工作流
-
-```bash
-/claude 运行 code-review 工作流
-```
-
-### 3. 调试步骤
-
-```bash
-# CLI 模式
-/claude 调试 code-review 的 step-02-analyze 步骤
-
-# Dashboard 模式
-/claude 打开调试面板
-```
-
-## 标准目录布局
-
-### 工作流定义（项目内）
-
-```text
-.ai-workflows/<workflow-id>/
-  orchestration.md          # 路由逻辑
-  workflow.spec.json        # 元数据
-  steps/
-    step-01-*.md            # 子 Agent 指令
-  fixtures/
-    step-01-*/
-      <test-case>/
-        prompt.md
-        expected.md
-        assertions.md
-```
-
-### 执行产物（项目根目录）
-
-```text
 runs/<workflow-id>/<run-id>/
-  state.json                # 运行状态
-  <step-id>/
-    prompt.md               # 发送的提示
-    response.md             # Agent 响应
-    <artifacts>             # 产物文件
+  ├── state.md              # 状态机（Frontmatter）+ 结果（Body）
+  └── <step-id>/
+      ├── sub-agent-prompt.md
+      ├── response.json
+      └── <artifacts...>
 ```
 
-### 调试产物（项目根目录）
+**核心脚本**：
+- `scripts/run_workflow.py` - 执行引擎
 
-```text
-debugs/<workflow-id>/<step-id>/<test-case>/
-  response.md               # Agent 输出
-  validation.md             # 验证推理
-  result.json               # 元数据
+---
+
+### debug-ai-workflow
+
+**用途**：隔离调试和测试单个工作流步骤。
+
+**设计原则**：
+- **隔离**：一次只调试一个步骤，不影响主执行
+- **Markdown Fixtures**：使用人类可读的测试文件
+- **合约验证**：确保步骤输出匹配 Schema，正确评估 `success` 和 `nextSteps`
+
+**执行模式**：
+1. **CLI 模式**（默认）：批量运行测试用例
+   ```bash
+   python scripts/debug_cli.py --workflow <id> --step <id> --test-case <case>
+   ```
+2. **交互模式**（Dashboard）：Web UI 选择和运行测试
+   ```bash
+   python scripts/debug_dashboard.py  # 后台运行，自动打开浏览器
+   ```
+
+**目录结构**：
+```
+.ai-workflows/<workflow-id>/fixtures/<step-id>/<test-case>/
+  ├── prompt.md          # 输入提示
+  ├── expected.md        # 期望输出
+  └── assertions.md      # 断言标准
+
+debugs/<workflow-id>/<step-id>/<test-case>/<run-id>/
+  ├── sub-agent-prompt.md
+  ├── response.json
+  ├── validation.md      # 验证推理
+  └── result.json        # 通过/失败结果
 ```
 
-## 工作流编排模型
+**核心脚本**：
+- `scripts/debug_cli.py` - CLI 测试执行
+- `scripts/debug_dashboard.py` - Web UI 调试面板
 
-### 路由规则
+---
 
-在 `orchestration.md` 中定义路由表：
+## 文件契约
+
+### 步骤文件结构 (`steps/<step-id>.md`)
+
+每个步骤必须遵循标准结构：
+
+```markdown
+# Step: <step-id>
+
+## Step Goal
+<步骤目标>
+
+## Input
+- **workDir**: 工作目录路径
+- **<其他输入>**: <描述>
+
+## Instructions
+<核心执行逻辑>
+
+## Recommend Next Steps
+<下一步建议逻辑，返回字符串数组>
+
+## Output
+- **JSON Schema**: `steps/schemas/<step-id>.schema.json`
+- **Fields**:
+  - `success`: (Boolean) 成功标准是否达成
+  - `nextSteps`: (Array of Strings) 下一步 ID 数组
+  - `<自定义字段>`: (必须全局唯一)
+
+## Success/Failure Criteria
+<成功/失败标准>
+```
+
+### 路由表结构 (`routing.json`)
 
 ```json
 {
-  "workflow_id": "example",
-  "entry_step": "step-01-init",
-  "routes": [
+  "step-01-init": [
     {
-      "from": "step-01-init",
-      "when": "always",
-      "next_step": "step-02-process"
-    },
+      "condition_name": "入口步骤",
+      "depends_on": [],
+      "required_inputs": {}
+    }
+  ],
+  "step-02-process": [
     {
-      "from": "step-02-process",
-      "when": "output_path_truthy",
-      "path": "decision.needs_revision",
-      "next_step": "step-01-init"
+      "condition_name": "标准顺序路径",
+      "depends_on": ["step-01-init"],
+      "required_inputs": {
+        "step-01-init.success": true
+      }
     }
   ]
 }
 ```
 
-### 步骤契约
+### 状态文件结构 (`runs/<workflow-id>/<run-id>/state.md`)
 
-在每个 step 文件中定义契约：
-
-```json
+```markdown
+---
 {
-  "step_id": "step-01-init",
-  "inputs_required": ["request"],
-  "outputs_written": ["normalized_request"],
-  "recommended_next_step": "step-02-process"
+  "workflow_id": "my-workflow",
+  "run_id": "run-20260422-120000",
+  "status": "running",
+  "active_steps": ["step-02-process"],
+  "completed_steps": ["step-01-init"],
+  "pending_signals": [],
+  "step_outputs": {},
+  "created_at": "2026-04-22T12:00:00Z",
+  "updated_at": "2026-04-22T12:01:00Z"
 }
+---
+
+# Workflow Run State
+
+## Step Outcomes
+<!-- 步骤结果追加到此处 -->
 ```
 
-## 技能安装
+## 使用示例
 
-将本仓库的三个技能目录复制到你的 Claude Code skills 目录：
+### 创建工作流
 
 ```bash
-# 假设你克隆了本仓库到 ~/ai-workflow-foundation
-cp -r ~/ai-workflow-foundation/create-ai-workflow ~/.claude/skills/
-cp -r ~/ai-workflow-foundation/execute-ai-workflow ~/.claude/skills/
-cp -r ~/ai-workflow-foundation/debug-ai-workflow ~/.claude/skills/
+# 使用 create-ai-workflow skill
+/create-ai-workflow
 ```
 
-或者通过 MCP 配置引用本仓库。
+### 执行工作流
 
-## 示例工作流
+```bash
+# 使用 execute-ai-workflow skill
+/execute-ai-workflow <workflow-id>
+```
 
-- **PRD 生成器** - 从用户需求生成产品需求文档
-- **代码审查** - 分析 PR 变更并生成审查意见
-- **测试生成** - 根据代码生成单元测试
-- **文档更新** - 检测代码变更并更新相关文档
+### 调试步骤
 
-## License
+```bash
+# CLI 模式
+python .claude/skills/debug-ai-workflow/scripts/debug_cli.py \
+  --workflow my-workflow \
+  --step step-02-process \
+  --test-case happy-path
 
-MIT
+# Dashboard 模式
+python .claude/skills/debug-ai-workflow/scripts/debug_dashboard.py
+```
+
+## 项目结构
+
+```
+<project-root>/
+├── .ai-workflows/
+│   └── <workflow-id>/
+│       ├── orchestration.md      # 主代理合约（入口步骤）
+│       ├── routing.json          # DAG 准入控制路由表
+│       ├── workflow.spec.json    # 元数据
+│       ├── steps/
+│       │   ├── <step-id>.md      # 步骤指令
+│       │   └── schemas/          # JSON Schema
+│       └── fixtures/             # 测试用例
+│
+├── .claude/skills/
+│   ├── create-ai-workflow/       # 创建工作流技能
+│   ├── execute-ai-workflow/      # 执行工作流技能
+│   └── debug-ai-workflow/        # 调试工作流技能
+│
+└── runs/                         # 执行状态
+    └── <workflow-id>/
+        └── <run-id>/
+            ├── state.md
+            └── <step-id>/
+```
+
+## 核心设计决策
+
+| 决策 | 传统模型 | Admission Control 模型 |
+|------|----------|------------------------|
+| 路由逻辑 | 主代理决定下一步 | `routing.json` 驱动，主代理不感知 |
+| 下一步建议 | 硬编码序列 | `nextSteps` 信号驱动 |
+| 分支/并行 | 复杂条件判断 | OR 逻辑条件集 |
+| 汇合（Join） | 手动状态追踪 | AND 逻辑自动汇合 |
+| 调试隔离 | 难以隔离 | fixtures + 独立 `debugs/` 目录 |
+
+## 优势
+
+1. **确定性**：路由逻辑在 `routing.json` 中，不依赖 LLM 推理
+2. **可测试**：每个步骤有独立的 Markdown fixtures
+3. **可扩展**：支持复杂 DAG（分支、并行、汇合）
+4. **可审计**：每个步骤的确切提示和输出都有记录
+5. **隔离**：每个步骤有独立工作区，避免文件冲突
