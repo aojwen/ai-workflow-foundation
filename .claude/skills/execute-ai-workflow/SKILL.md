@@ -8,38 +8,55 @@ description: Orchestration and execution of isolated, step-based AI workflows. U
 Use this skill to run a workflow based on the **Admission Control** model. In this model, the Main Agent is a pure executor, and the routing logic is offloaded to a deterministic Python engine reading a standalone `routing.json` file.
 
 ## Design Principles
+- **No Templates/References**: This skill reads the routing rules directly from the specific workflow's `.ai-workflows/<workflow-id>/routing.json` and uses the instructions from `steps/`.
 - **Main Agent as Pure Executor:** The Main Agent reads `active_steps` from the state, spawns sub-agents, and submits results. It **DOES NOT** calculate or decide which step comes next.
 - **Admission Control Engine (Deterministic Routing):** 
   - Step completions emit `nextSteps` suggestions to `pending_signals`.
-  - The deterministic execution script scans the `routing.json` file (which is hidden from the Main Agent's orchestration prompt).
-  - A step is moved from `pending_signals` to `active_steps` if **any** of its condition sets (OR logic) in `routing.json` have all `depends_on` and `required_inputs` (AND logic) satisfied.
-- **Contract Enforcement:** If a step's dependencies are met but input values do not match any condition set, the workflow **fails fast** with a contract violation error.
+  - **Scoped Evaluation**: The execution script scans `routing.json`, but **ONLY evaluates Condition Sets where the newly completed step is listed in `depends_on`**. This prevents unrelated condition sets from causing ambiguous routing.
+  - A step is moved from `pending_signals` to `active_steps` if **any** of its relevant condition sets (OR logic) have all `depends_on` and `required_inputs` (AND logic) satisfied.
+  - **Regex Matching**: Supports fuzzy matching for inputs (e.g., `"regex:^pass.*"`).
+  - **Re-entrant Steps (Multi-Trigger)**: A step CAN be activated multiple times (e.g., in a loop), but to prevent unpredictable state overwrites (file conflicts), it **cannot run concurrently with itself**. If a re-entry signal arrives while the step is already active, it will queue in `pending_signals`.
+- **Contract Enforcement:** If a relevant step's dependencies are met but input values do not match, the workflow **fails fast** with a contract violation error.
 - **Workspace Isolation:** Each step runs in an isolated `runs/<workflow-id>/<run-id>/<step-id>/` with an injected `workDir`.
 
 ## Execution Workflow
 
-1. **Initialization:**
-   - Call the execution script to create `state.md`. The script identifies the `entry_step` and sets it as the first item in `active_steps`.
-2. **Step Execution:**
-   - The Main Agent looks at `active_steps`. For each step, it reads the instructions from `.ai-workflows/<workflow-id>/steps/`.
-   - It prepares the prompt, injects `workDir`, and spawns a sub-agent.
-   - It records exact prompts in `sub-agent-prompt.md`.
-3. **Outcome Submission:**
-   - Once a sub-agent returns its flat JSON, the Main Agent submits it to the execution script's `submit` command.
-   - The script updates `state.md` (recording output, adding to `completed_steps`, and signaling `nextSteps` to `pending_signals`).
-4. **Admission Scan (Offloaded Logic):**
-   - The execution script automatically scans `routing.json` for `pending_signals`.
-   - It updates `active_steps` in the `state.md` frontmatter.
-   - If a step meets its `depends_on` but fails its `required_inputs` contract, the script sets the workflow status to `failed`.
+1. **Initialization / Resume:**
+   - Resolve the workflow definition in `.ai-workflows/<workflow-id>/`.
+   - **Generate `run-id`**: If starting a new run, call the execution script to create `state.md`. The script identifies the `entry_step` and sets it as the first item in `active_steps`.
+2. **Step Selection & Routing:**
+   - Look at `active_steps` in the `state.md` frontmatter.
+   - Extract required `Input` values from previous outcomes in `state.md` (or prompt user if missing).
+3. **Delegation (Handoff) with Workspace Injection:**
+   - Read the target step's `.md` file in `.ai-workflows/<workflow-id>/steps/`.
+   - **Workspace Preparation**: Create the step-specific directory: `runs/<workflow-id>/<run-id>/<step-id>/`.
+   - **Mandatory `workDir`**: ALWAYS include `workDir` in the input context, set to the absolute path of the step-specific directory.
+   - **Prompt Recording**: BEFORE spawning the sub-agent, you MUST construct the final, fully-resolved prompt and save it to `runs/<workflow-id>/<run-id>/<step-id>/sub-agent-prompt.md`. This is non-negotiable for auditability.
+   - **Spawn Sub-Agent**: Use the final prompt to invoke a sub-agent.
+4. **Outcome Recording & Admission Scan:**
+   - Save the raw response to `runs/<workflow-id>/<run-id>/<step-id>/response.json`.
+   - Verify the JSON structure against `.ai-workflows/<workflow-id>/steps/schemas/<step-id>.schema.json`.
+   - Once a sub-agent returns its flat JSON, you MUST submit it to the execution script using the `submit` command.
+   - The script updates `state.md` (recording output, adding to `completed_steps`, signaling `nextSteps`, and performing the **Scoped Admission Scan** to update `active_steps`).
 5. **Finality:**
-   - The Main Agent repeats the loop until `active_steps` is empty.
+   - Repeat the loop until `active_steps` is empty. If it empties but `pending_signals` remain, it's a deadlock. If it empties cleanly, it's complete.
 
 ## Directory Structure
 ```text
-runs/<workflow-id>/<run-id>/
-  state.md                # Reactive state machine (Frontmatter) + Results (Body)
-  <step-id>/
-    sub-agent-prompt.md   # Exact prompt used
-    response.json         # Raw output
-    <artifacts...>        # Generated files
+(Project Root)
+├── .ai-workflows/
+│   └── <workflow-id>/
+│       ├── routing.json
+│       ├── steps/
+│       └── workflow.spec.json
+│
+└── runs/                     <-- ALL execution state lives here
+    └── <workflow-id>/
+        └── <run-id>/         <-- Dynamically generated (e.g., run-20231027-143005)
+            ├── state.md      <-- Reactive state machine (Frontmatter) + Results (Body)
+            ├── <step-01-id>/
+            │   ├── sub-agent-prompt.md  <-- Mandatory: The exact prompt used
+            │   ├── response.json        <-- Raw JSON response
+            │   └── <artifacts...>       <-- Any files generated by the sub-agent
+            └── <step-02-id>/...
 ```

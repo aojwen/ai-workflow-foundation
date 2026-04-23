@@ -39,7 +39,6 @@ def load_orchestration(workflow_dir: Path) -> dict[str, Any]:
 def load_routing_table(workflow_dir: Path) -> dict[str, Any]:
     path = workflow_dir / "routing.json"
     if not path.exists():
-        # Fallback to orchestration.md for backwards compatibility with older workflows
         return load_orchestration(workflow_dir).get("routing_table", {})
     return json.loads(read_text(path))
 
@@ -53,27 +52,34 @@ def resolve_workflow_dir(workflow_ref: str, project_root: str | None) -> Path:
         return resolved
     raise FileNotFoundError(f"Workflow '{workflow_ref}' not found.")
 
+def latest_run_id(workflow_dir: Path) -> str:
+    """Return the most recent run ID for a workflow based on timestamp ordering."""
+    runs_dir = workflow_dir / "runs"
+    if not runs_dir.exists():
+        raise FileNotFoundError(f"No runs found for workflow: {workflow_dir}")
+
+    run_dirs = [d for d in runs_dir.iterdir() if d.is_dir() and d.name != ".gitkeep"]
+    if not run_dirs:
+        raise FileNotFoundError(f"No runs found for workflow: {workflow_dir}")
+
+    # Sort by name (timestamp-based) descending and return the most recent
+    latest = sorted(run_dirs, key=lambda d: d.name, reverse=True)[0]
+    return latest.name
+
 def step_path(workflow_dir: Path, step_id: str) -> Path:
     return workflow_dir / "steps" / f"{step_id}.md"
 
 def load_step(workflow_dir: Path, step_id: str) -> dict[str, Any]:
-    # In the future, step contracts could also be stripped from LLM view, 
-    # but for now they stay in steps/*.md. Let's extract safely.
     path = step_path(workflow_dir, step_id)
     try:
         contract = extract_json_block(read_text(path), "Machine Contract")
     except ValueError:
-        # Fallback if the step file format was updated to hide contract
         schema_path = workflow_dir / "steps" / "schemas" / f"{step_id}.schema.json"
-        contract = {
-            "step_id": step_id,
-            "outputs_written": []
-        }
+        contract = {"step_id": step_id, "outputs_written": []}
         if schema_path.exists():
             schema = json.loads(read_text(schema_path))
             props = schema.get("properties", {})
             contract["outputs_written"] = [k for k in props.keys() if k not in ["success", "nextSteps", "schema"]]
-            
     contract["_path"] = str(path)
     return contract
 
@@ -99,15 +105,6 @@ def save_state_full(workflow_dir: Path, run_id: str, state: dict[str, Any], body
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"---\n{json.dumps(state, indent=2, ensure_ascii=False)}\n---\n{body}", encoding="utf-8")
 
-def latest_run_id(workflow_dir: Path) -> str:
-    runs_path = workflow_dir / "runs"
-    if not runs_path.exists():
-        raise FileNotFoundError(f"Runs directory not found: {runs_path}")
-    candidates = [p.name for p in runs_path.iterdir() if p.is_dir()]
-    if not candidates:
-        raise FileNotFoundError("No runs found.")
-    return sorted(candidates)[-1]
-
 def resolve_value(path: str, context: dict[str, Any]) -> Any:
     parts = path.split(".")
     current = context
@@ -122,8 +119,8 @@ def process_step_submission(workflow_dir: Path, run_id: str, step_id: str, step_
     state, body = load_state_full(workflow_dir, run_id)
     
     if "completed_steps" not in state: state["completed_steps"] = []
-    if step_id not in state["completed_steps"]:
-        state["completed_steps"].append(step_id)
+    # Note: We append to completed_steps even if it ran before to signal a new completion event.
+    state["completed_steps"].append(step_id)
         
     if step_id in state.get("active_steps", []):
         state["active_steps"].remove(step_id)
@@ -132,36 +129,58 @@ def process_step_submission(workflow_dir: Path, run_id: str, step_id: str, step_
     
     body += f"\n### Step {step_id} Output\n```json\n{json.dumps(step_output, indent=2)}\n```\n"
 
+    # Event Push: Add recommended next steps to pending_signals
     emitted = step_output.get("nextSteps", [])
     if isinstance(emitted, str): emitted = [emitted]
     for ns in emitted:
-        if ns and ns != "STOP" and ns not in state.get("pending_signals", []) and ns not in state.get("completed_steps", []):
+        if ns and ns != "STOP":
             state.setdefault("pending_signals", []).append(ns)
 
-    # -------------------------------------------------------------
-    # ADMISSION CONTROL (Using dedicated routing.json)
-    # -------------------------------------------------------------
+    # Scoped Admission Control (Selective Evaluation for Loop Support)
     routing_table = load_routing_table(workflow_dir)
     newly_activated = []
+    signals_to_remove = []
     
+    # We iterate over pending signals and specifically look for ones that can be triggered by THIS submission
     for pending in list(state.get("pending_signals", [])):
+        # Re-entry Guard: A step cannot be re-activated if it is CURRENTLY running.
+        # It will stay in pending_signals and wait for the NEXT submission event to try again.
+        if pending in state.get("active_steps", []):
+            continue
+            
         condition_sets = routing_table.get(pending, [])
         if not isinstance(condition_sets, list): condition_sets = [condition_sets]
         
+        # Scoped logic: Only evaluate condition sets that depend on the step we JUST finished.
+        relevant_conditions = [cs for cs in condition_sets if step_id in cs.get("depends_on", [])]
+        
+        if not relevant_conditions:
+            continue
+            
         step_is_blocked_by_deps = False
         any_condition_set_satisfied = False
         validation_errors = []
 
-        for cs in condition_sets:
+        for cs in relevant_conditions:
             deps = cs.get("depends_on", [])
             inputs = cs.get("required_inputs", {})
             
+            # Check Dependencies (AND)
+            # We check if ALL required steps have run at least once (are in completed_steps).
             if not all(d in state["completed_steps"] for d in deps):
                 step_is_blocked_by_deps = True
                 continue
             
-            mismatch = {k: {"exp": v, "act": resolve_value(k, state["step_outputs"])} 
-                       for k, v in inputs.items() if resolve_value(k, state["step_outputs"]) != v}
+            # Check Input Contract (AND) with Regex Support
+            mismatch = {}
+            for k, expected_val in inputs.items():
+                actual_val = resolve_value(k, state.get("step_outputs", {}))
+                if isinstance(expected_val, str) and expected_val.startswith("regex:"):
+                    pattern = expected_val[6:]
+                    if actual_val is None or not re.search(pattern, str(actual_val)):
+                        mismatch[k] = {"exp": expected_val, "act": actual_val}
+                elif actual_val != expected_val:
+                    mismatch[k] = {"exp": expected_val, "act": actual_val}
             
             if not mismatch:
                 any_condition_set_satisfied = True
@@ -170,16 +189,21 @@ def process_step_submission(workflow_dir: Path, run_id: str, step_id: str, step_
                 validation_errors.append(mismatch)
 
         if any_condition_set_satisfied:
-            state["pending_signals"].remove(pending)
             newly_activated.append(pending)
+            signals_to_remove.append(pending)
         elif not step_is_blocked_by_deps and validation_errors:
             state["status"] = "failed"
-            state["error"] = f"Admission denied for {pending}. No condition sets satisfied: {validation_errors}"
-            body += f"\n### ERROR: Admission Denied for {pending}\nFailed all {len(validation_errors)} condition sets.\n"
+            state["error"] = f"Admission denied for {pending} via {step_id}. Contract mismatch: {validation_errors}"
+            body += f"\n### ERROR: Admission Denied for {pending}\nContract mismatch on triggering path from {step_id}.\n"
             save_state_full(workflow_dir, run_id, state, body)
             return state
 
-    state.setdefault("active_steps", []).extend(newly_activated)
+    # Update State
+    state["pending_signals"] = [s for s in state.get("pending_signals", []) if s not in signals_to_remove]
+    for act in newly_activated:
+        if act not in state.setdefault("active_steps", []):
+            state["active_steps"].append(act)
+            
     if not state["active_steps"]:
         state["status"] = "failed" if state.get("pending_signals") else "completed"
     

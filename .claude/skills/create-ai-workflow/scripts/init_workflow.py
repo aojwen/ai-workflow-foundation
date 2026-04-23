@@ -47,7 +47,6 @@ STEP_TEMPLATE = """# Step: {step_id}
 
 ## Recommend Next Steps
 {next_step_logic}
-- Default: `["{recommended_next}"]`
 
 ## Output
 - **JSON Schema**: `steps/schemas/{step_id}.schema.json`
@@ -136,7 +135,8 @@ def slugify(text: str) -> str:
 
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    if not path.exists():
+        path.write_text(content, encoding="utf-8")
 
 def build_step_id(index: int, name: str) -> str:
     return f"step-{index:02d}-{slugify(name)}"
@@ -172,41 +172,47 @@ def scaffold_workflow(
     # --- Routing Table: Extracted to routing.json ---
     routing_table = {}
     for index, step_id in enumerate(step_ids):
-        if index == 0:
-            routing_table[step_id] = [{"depends_on": [], "required_inputs": {}}]
+        step_spec = steps[index]
+        if "routing_conditions" in step_spec:
+            routing_table[step_id] = step_spec["routing_conditions"]
         else:
-            prev_step = step_ids[index - 1]
-            routing_table[step_id] = [
-                {
-                    "condition_name": "Standard sequential path",
-                    "depends_on": [prev_step],
-                    "required_inputs": { f"{prev_step}.success": True }
-                }
-            ]
+            # Fallback auto-generation if not in spec
+            if index == 0:
+                routing_table[step_id] = [{"depends_on": [], "required_inputs": {}}]
+            else:
+                prev_step = step_ids[index - 1]
+                routing_table[step_id] = [
+                    {
+                        "condition_name": "Standard sequential path",
+                        "depends_on": [prev_step],
+                        "required_inputs": { f"{prev_step}.success": True }
+                    }
+                ]
             
-    write(root / "routing.json", json.dumps(routing_table, indent=2) + "\n")
+    # Use write_text directly here to overwrite if regenerating
+    (root / "routing.json").parent.mkdir(parents=True, exist_ok=True)
+    (root / "routing.json").write_text(json.dumps(routing_table, indent=2) + "\n", encoding="utf-8")
 
-    write(root / "orchestration.md", ORCHESTRATION_TEMPLATE.format(
+    (root / "orchestration.md").write_text(ORCHESTRATION_TEMPLATE.format(
         workflow_id=workflow_id, goal=goal, entry_step=entry_step
-    ))
+    ), encoding="utf-8")
 
     for index, step_id in enumerate(step_ids):
         step_spec = steps[index]
-        recommended_next = step_ids[index + 1] if index + 1 < len(step_ids) else "STOP"
         inputs = step_spec.get("inputs_required") or ["context"]
         outputs = step_spec.get("outputs_written") or ["result"]
         
-        inputs_list = "\n".join(f"- **{item}**: <Description of {item}>" for item in inputs)
-        outputs_list = "\n".join(f"  - `{item}`: <Description of {item}>" for item in outputs)
+        inputs_list = "\n".join(f"- **{item}**: {step_spec.get('purpose', 'Dynamic context')}" for item in inputs)
+        outputs_list = "\n".join(f"  - `{item}`: Data property" for item in outputs)
 
-        write(root / "steps" / f"{step_id}.md", STEP_TEMPLATE.format(
+        (root / "steps" / f"{step_id}.md").parent.mkdir(parents=True, exist_ok=True)
+        (root / "steps" / f"{step_id}.md").write_text(STEP_TEMPLATE.format(
             step_id=step_id, purpose=step_spec.get("purpose", "TODO"),
             instructions_logic=step_spec.get("instructions", "1. Process the inputs.\n2. Generate required artifacts."),
             inputs_list=inputs_list,
             outputs_list=outputs_list,
-            recommended_next=recommended_next,
-            next_step_logic=step_spec.get("next_step_logic", "- Default to the next sequential step."),
-        ))
+            next_step_logic=step_spec.get("next_step_logic", f"- Default to `[\"{step_ids[index + 1] if index + 1 < len(step_ids) else 'STOP'}\"]`"),
+        ), encoding="utf-8")
 
         additional_props = ""
         required_fields = ""
@@ -214,26 +220,41 @@ def scaffold_workflow(
             additional_props += f',\n    "{out}": {{\n      "type": "string",\n      "description": "Description of {out}"\n    }}'
             required_fields += f', "{out}"'
         
-        write(root / "steps" / "schemas" / f"{step_id}.schema.json", SCHEMA_TEMPLATE.format(
+        (root / "steps" / "schemas" / f"{step_id}.schema.json").parent.mkdir(parents=True, exist_ok=True)
+        (root / "steps" / "schemas" / f"{step_id}.schema.json").write_text(SCHEMA_TEMPLATE.format(
             additional_properties=additional_props,
             required_fields=required_fields
-        ))
+        ), encoding="utf-8")
         
         test_case = "happy-path"
         fixture_dir = root / "fixtures" / step_id / test_case
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        
         fixture_input = step_spec.get("fixture_input") or {item: "TODO" for item in inputs}
         
-        write(fixture_dir / "prompt.md", FIXTURE_PROMPT_TEMPLATE.format(
+        fixture_dir.joinpath("prompt.md").write_text(FIXTURE_PROMPT_TEMPLATE.format(
             step_id=step_id, test_case=test_case,
             purpose=step_spec.get("purpose", "TODO"),
             inputs_json=json.dumps(fixture_input, indent=2, ensure_ascii=False)
-        ))
+        ), encoding="utf-8")
+        
+        expected_summary = step_spec.get("expected_output_summary", "TODO: Describe expected outcome")
+        fixture_dir.joinpath("expected.md").write_text(f"# Expected Outcome\n{expected_summary}\n", encoding="utf-8")
+        
+        fixture_dir.joinpath("assertions.md").write_text(
+            f"# Assertions\n- `success` should be true.\n- Artifacts should be saved to workDir.\n- `nextSteps` should be emitted.", 
+            encoding="utf-8"
+        )
 
-    write(base_project / "runs" / workflow_id / "state.example.md", RUN_STATE_TEMPLATE.format(
-        workflow_id=workflow_id, entry_step=entry_step, goal=goal
-    ))
+    runs_dir = base_project / "runs" / workflow_id
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir.joinpath(".gitkeep").write_text("", encoding="utf-8")
     
-    write(root / "workflow.spec.json", json.dumps({
+    runs_dir.joinpath("state.example.md").write_text(RUN_STATE_TEMPLATE.format(
+        workflow_id=workflow_id, entry_step=entry_step, goal=goal
+    ), encoding="utf-8")
+    
+    (root / "workflow.spec.json").write_text(json.dumps({
         "workflow_id": workflow_id,
         "goal": goal,
         "project_root": str(base_project),
@@ -241,7 +262,7 @@ def scaffold_workflow(
         "orchestration_model": "main-agent-routes-sub-agents-execute",
         "steps": steps,
         "metadata": metadata or {},
-    }, indent=2, ensure_ascii=False) + "\n")
+    }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     return root
 
