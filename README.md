@@ -105,15 +105,22 @@ runs/<workflow-id>/<run-id>/
 - **Markdown Fixtures**：使用人类可读的测试文件
 - **合约验证**：确保步骤输出匹配 Schema，正确评估 `success` 和 `nextSteps`
 
-**执行模式**：
-1. **CLI 模式**（默认）：批量运行测试用例
+**使用方式**：
+
+1. **CLI 模式**（默认）- 调试单个步骤
    ```bash
-   python scripts/debug_cli.py --workflow <id> --step <id> --test-case <case>
+   /debug-ai-workflow --workflow <id> --step <id> --test-case <case>
    ```
-2. **交互模式**（Dashboard）：Web UI 选择和运行测试
+   示例：
    ```bash
-   python scripts/debug_dashboard.py  # 后台运行，自动打开浏览器
+   /debug-ai-workflow --workflow create-prd --step step-02-discovery --test-case happy-path
    ```
+
+2. **Dashboard 模式** - Web UI 交互式调试
+   ```bash
+   /debug-ai-workflow --dashboard
+   ```
+   自动打开浏览器，可在 UI 中选择工作流、步骤、测试用例并运行。
 
 **目录结构**：
 ```
@@ -128,10 +135,6 @@ debugs/<workflow-id>/<step-id>/<test-case>/<run-id>/
   ├── validation.md      # 验证推理
   └── result.json        # 通过/失败结果
 ```
-
-**核心脚本**：
-- `scripts/debug_cli.py` - CLI 测试执行
-- `scripts/debug_dashboard.py` - Web UI 调试面板
 
 ---
 
@@ -219,28 +222,23 @@ debugs/<workflow-id>/<step-id>/<test-case>/<run-id>/
 ### 创建工作流
 
 ```bash
-# 使用 create-ai-workflow skill
 /create-ai-workflow
 ```
 
 ### 执行工作流
 
 ```bash
-# 使用 execute-ai-workflow skill
-/execute-ai-workflow <workflow-id>
+/execute-ai-workflow --workflow <workflow-id>
 ```
 
 ### 调试步骤
 
 ```bash
-# CLI 模式
-python .claude/skills/debug-ai-workflow/scripts/debug_cli.py \
-  --workflow my-workflow \
-  --step step-02-process \
-  --test-case happy-path
+# CLI 模式 - 调试单个步骤
+/debug-ai-workflow --workflow create-prd --step step-02-discovery
 
-# Dashboard 模式
-python .claude/skills/debug-ai-workflow/scripts/debug_dashboard.py
+# Dashboard 模式 - Web UI 交互调试
+/debug-ai-workflow --dashboard
 ```
 
 ## 项目结构
